@@ -1,0 +1,12 @@
+__pycache__
+pydata/
+psp_data/
+*.cdf
+*.ipynb
+*.png
+*.pdf
+*.npy
+*.nc
+*.json
+*.csv
+*.txt
