@@ -107,9 +107,8 @@ def derive_reduced_vdf(spc_ds, DATASET=True):
 
     # get the x and y components
     vel_z_tan_az = vel_mid * np.tan(np.radians(azimuth.data))
-    vel_z_tan_el = vel_mid * np.tan(np.radians(elevation.data))     # There was a negative sign here that should not be needed! KP defined elevation flow angle
-                                                                    # as (a + b) - (c + d)/tot. This needs a sign to adhere with convention
-                                                                    # In this case elevation is (c + d) - (a + b)/tot. HENCE NO SIGN CHANGE NEEDED!
+    vel_z_tan_el = vel_mid * np.tan(-np.radians(elevation.data))     # There is a negative sign here to conform with the y-sc direction!
+                                                                     # This value is very important to keep in!
 
     if DATASET:
         names = ['azimuth', 'elevation', 
