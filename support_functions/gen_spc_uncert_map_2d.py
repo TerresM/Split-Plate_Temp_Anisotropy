@@ -7,9 +7,10 @@ import xarray as xr
 import matplotlib.pyplot as plt 
 from matplotlib.colors import LogNorm
 import cdflib
+import cdflib.xarray
 
 def gen_uncertainty_map(angle_bin_width, anisotropy_bins):
-    uncertainty_map = cdflib.cdf_to_xarray(f'{sys.path[0]}/Anisotropy_DELTA_PLUS-MINUS.cdf')
+    uncertainty_map = cdflib.xarray.cdf_to_xarray(f'{sys.path[0]}/Anisotropy_DELTA_PLUS-MINUS.cdf')
 
     deltaPlus = uncertainty_map['Anisotropy DELTA_PLUS']
     deltaMinus = uncertainty_map['Anisotropy DELTA_MINUS']

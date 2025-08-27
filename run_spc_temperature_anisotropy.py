@@ -6,6 +6,7 @@ import xarray as xr
 import matplotlib.pyplot as plt 
 from matplotlib.colors import LogNorm
 import cdflib
+import cdflib.xarray
 plt.ion()
 
 from sklearn.linear_model import LinearRegression
@@ -30,7 +31,6 @@ from functions.spc_current_to_rdf_v2 import derive_reduced_vdf
 
 from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map
 from functions.spc_do_anisotropy_calc import perform_fitting_with_time_windows
-
 
 def load_config(file_path):
     with open(file_path, 'r') as file:
@@ -62,17 +62,76 @@ def plot_spc_with_bfield(spc_data, flds_data):
 
     plt.show()
 
+
+import glob
+def get_latest_version(file_names):
+    latest_version = -1
+    latest_file = None
+    
+    for file_name in file_names:
+        # Extract the version number as an integer
+        version_str = file_name.split('_v')[-1].split('.')[0]
+        version = int(version_str)
+        
+        # Update the latest version and file name if current version is higher
+        if version > latest_version:
+            latest_version = version
+            latest_file = file_name
+    
+    return latest_file
+
+def load_fields_data(trange, datatype, level, CREDENTIALS=None):
+    """
+    TODO : Add different load routines for credentials
+    """
+    pwd = os.getcwd()
+
+    filenames = []
+    
+    if os.path.exists(f'{pwd}/psp_data'):
+        print('Checking local data directory')
+
+        if os.path.exists(f'{pwd}/psp_data/fields/{level}/'):
+            preamble = 'psp_fld'
+
+            file = f'{os.getcwd()}/psp_data/fields/{level}/{datatype}/{trange[0].year}/{trange[0].month:02d}/{preamble}_{level}_{datatype}_{date_str}_v**.cdf'
+            if (glob.glob(file)):
+                print('Data is already downloaded', flush=True)
+                latest_version = get_latest_version(glob.glob(file))
+
+                filenames.append(latest_version)
+            else:
+                print('Using PySpedas to try to download data.')
+                if credentials:
+                    filenames = pyspedas.psp.fields(trange,
+                                     datatype=datatype,
+                                     level=level,
+                                     notplot=False,
+                                     get_support_data=True,
+                                     last_version=True,
+                                     username=CREDENTIALS[0],
+                                     password=CREDENTIALS[1])
+                else:    
+                    filenames = pyspedas.psp.fields(trange,
+                                     datatype=datatype,
+                                     level=level,
+                                     notplot=False,
+                                     get_support_data=True,
+                                     last_version=True)
+            
+            return(filenames)
+
 if __name__ == "__main__":
     # Set the time range that we are interested in
-    tstart = datetime.datetime(2023, 9, 26)
-    tend   = datetime.datetime(2023, 9, 27)
+    tstart = datetime.datetime(2023, 12, 24)
+    tend   = datetime.datetime(2024, 1, 2)
     trange = [tstart, tend]
     trange_bfield = [tstart - datetime.timedelta(days= 1), tend + datetime.timedelta(days= 1)]
 
     date_str = str(tstart)[0:10] 
 
     # Load in the Downsampled 1s SPC data from KP compression
-    data_ds = cdflib.cdf_to_xarray(f'{sys.path[0]}/SPC_DownsampledSpectra_{date_str}_1sec.cdf', to_datetime=True)
+    data_ds = cdflib.xarray.cdf_to_xarray(f'{sys.path[0]}/input_data/SPC_DownsampledSpectra_{date_str}_1sec.cdf', to_datetime=True)
 
     angle_bins = 4  # degrees
     ani_bins = 30   # N-bins 0.03 to 15
@@ -111,7 +170,7 @@ if __name__ == "__main__":
                                    username=credentials['psp']['sweap']['username'],
                                    password=credentials['psp']['sweap']['password'])
 
-    spc_l3 = cdflib.cdf_to_xarray(psp_spc_l3[0], to_datetime=True, fillval_to_nan=True).rename({'Epoch' : 'time'})
+    spc_l3 = cdflib.xarray.cdf_to_xarray(psp_spc_l3[0], to_datetime=True, fillval_to_nan=True).rename({'Epoch' : 'time'})
 
     # Drop full-scan values
     flag_is_1 = np.squeeze(np.argwhere(spc_l3.general_flag.data == 1))
@@ -210,7 +269,7 @@ if __name__ == "__main__":
     result_xarray = values
 
     # Save our file.
-    cdflib.xarray_to_cdf(result_xarray, f'/home/michael/Research/pySolarWind/PSP/Fit_Data/Fixed_RDF/{date_str}_xr_Fit_v2.cdf')
+    cdflib.xarray.xarray_to_cdf(result_xarray, f'./Fit_Data/Fixed_RDF/{date_str}_xr_Fit_v2.cdf')
 
     sys.exit()
 
