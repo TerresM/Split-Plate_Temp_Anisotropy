@@ -32,14 +32,14 @@ def perform_fitting_with_time_windows(groups, l2_data, l3_data, fields_data,
     # Loop over all the groups
     for i in tqdm(range(len(groups))):
         # Define the timestamp
-        middle_time = groups[i][0] + np.diff(groups[i])/2
+        middle_time = np.datetime64(np.squeeze(groups[i][0] + np.diff(groups[i])/2), 'ns')
 
         # select the data tha falls inside our window.
         sel_l2_ds = l2_data.sel(time = slice(*groups[i]))
         sel_flds  = fields_data.sel(time = slice(*groups[i]))
         
         # Check if the selected subset has all the data!
-        if sel_l2_ds.dims['time'] > 0:
+        if sel_l2_ds.sizes['time'] > 0:
             # TODO: Perhaps add restriction to have at least two spectra to perform fitting
             # If in this loop data exists!
             sel_l3_ds = l3_data.sel(time = slice(*groups[i]))

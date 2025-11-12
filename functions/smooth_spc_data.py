@@ -4,14 +4,34 @@ import pandas as pd
 from tqdm import tqdm
 import flox
 
+def smooth_spc_resample(ds, smooth_seconds, method='mean'):
+    '''
+    This function will smooth the spc data to smooth_second resolution.
+    '''
+    if 'mv_lo_dim' in ds.dims:
+        ds = ds.rename({'mv_lo_dim' : 'mv_index'})
+
+    # This function groups all data by unique times and mv_lo values.
+    # Since mv_lo is decideded by the instruments commanding we have a set number of mv_lo values.
+    ds_groupby = ds.groupby(['epoch', 'mv_lo']).mean(skipna=True)
+
+    # Now we are going to resample the timeseries to the smooth seconds.
+    # Note we use the right most label and subtract half of the time time resolution to get the mean value.
+    if method.lower() == 'mean':
+        ds_win_avg   = ds_groupby.resample(epoch=f'{smooth_seconds}s', label='right', origin='start', offset=f'{smooth_seconds/2}s').mean(skipna=True)
+    if method.lower() == 'median':
+        ds_win_avg = ds_groupby.resample(epoch=f'{smooth_seconds}s', label='right', origin='start', offset=f'{smooth_seconds/2}s').median(skipna=True)
+
+    return ds_win_avg
+
 def smooth_spc(ds, smooth_seconds):
     '''
     This function will smooth the spc data to smooth_second resolution.
     '''
-    minimumCadence = np.min(np.diff(ds.time.data))
+    canonical_mv_lo = np.unique(ds.mv_lo.values)
 
-    time_range_downsample = np.arange(ds.time.data[0],
-                                      ds.time.data[-1],
+    time_range_downsample = np.arange(ds.epoch.data[0],
+                                      ds.epoch.data[-1],
                                       np.timedelta64(smooth_seconds, 's'))
 
     if len(time_range_downsample) % 2 == 0:
@@ -25,48 +45,85 @@ def smooth_spc(ds, smooth_seconds):
     count = 0
     for tindx in tqdm(locs):
         # xarray.Dataset
-        ds_temp = ds.sel(time=slice(tindx[0], tindx[1]))
+        ds_temp = ds.sel(epoch=slice(tindx[0], tindx[1]))
         
-        n_orig = 32#len(ds_temp.mv_lo.v_dim)
+        # n_orig = 32#len(ds_temp.mv_lo.v_dim)
         #print(l + 1020)
-        if ds_temp.time.size > 0:
-            timestamp =  np.datetime64(pd.to_datetime(tindx).mean())
+        if ds_temp.epoch.size > 0:
+            timestamp =  np.datetime64(pd.to_datetime(tindx).mean(), 'ns')
             # group by energy channel/mv_lo values
             ds_e_avg = ds_temp.groupby('mv_lo').mean(skipna=True, engine='flox')
-            ds_e_avg = ds_e_avg.assign_coords({'time' : timestamp})
-
-
-
-            num_to_add = n_orig - len(ds_e_avg.mv_lo)
-            n_temp = xr.full_like(ds_e_avg.isel(mv_lo=np.arange(num_to_add)), fill_value=np.nan)
+            ds_e_avg = ds_e_avg.reindex({'mv_lo' : canonical_mv_lo}, fill_value=np.nan)
+            ds_e_avg = ds_e_avg.assign_coords({'time' : timestamp}).expand_dims('time')
+            # num_to_add = n_orig - len(ds_e_avg.mv_lo)
+            # n_temp = xr.full_like(ds_e_avg.isel(mv_lo=np.arange(num_to_add)), fill_value=np.nan)
             
             #reduced_list.append(ds_e_avg)
-            temp = xr.concat([ds_e_avg, n_temp], dim='mv_lo')
-            temp = temp.expand_dims('time')
+            # temp = xr.concat([ds_e_avg, n_temp], dim='mv_lo')
+            # temp = temp.expand_dims('time')
             #reduced_list.append(temp)
         else:
-            # print('Here', l, len(ds_temp.time))
             # Fill with nan values
-            temp = xr.full_like(ds.isel(time=0), fill_value=np.nan).swap_dims({'v_dim' : 'mv_lo'})
-            timestamp = tindx[0] + np.timedelta64(500, 'ms')
-            temp = temp.assign_coords({'time': timestamp})
-            temp = temp.expand_dims('time')
+            # temp = xr.full_like(ds.isel(time=0), fill_value=np.nan).swap_dims({'v_dim' : 'mv_lo'})
+            timestamp = np.datetime64(tindx[0], 'ns') + np.timedelta64(int(1e9 * (smooth_seconds / 2)), 'ns')
+            ds_e_avg = xr.full_like(ds.isel(epoch=0), fill_value=np.nan)
+            ds_e_avg = ds_e_avg.assign_coords({'time': timestamp}).expand_dims('time')
+            # temp = temp.assign_coords()
+            # temp = temp.expand_dims('time')
 
-        temp = temp.reset_index(['mv_lo']).rename_dims({'mv_lo' : 'vdim'})
+        # temp = temp.reset_index(['mv_lo']).rename_dims({'mv_lo' : 'vdim'})
 
-        reduced_list.append(temp)
+        reduced_list.append(ds_e_avg)
         count += 1
     return(reduced_list)
 
+def smooth_spc_loop(ds, smooth_seconds):
+    '''
+    This function will smooth the spc data to smooth_second resolution.
+    '''
+    canonical_mv_lo = np.unique(ds.mv_lo.values)
+
+    time_range_downsample = np.arange(ds.epoch.data[0],
+                                      ds.epoch.data[-1],
+                                      np.timedelta64(smooth_seconds, 's'))
+
+    if len(time_range_downsample) % 2 == 0:
+        locs = np.lib.stride_tricks.sliding_window_view(time_range_downsample, 2)
+    else:
+        time_range_downsample = np.concatenate((time_range_downsample, 
+                                               np.array([time_range_downsample[-1] + np.timedelta64(smooth_seconds, 's')])), axis=0)
+        locs = np.lib.stride_tricks.sliding_window_view(time_range_downsample, 2)
+
+    reduced_list = []
+    count = 0
+    for tindx in tqdm(locs):
+        # xarray.Dataset
+        ds_temp = ds.sel(epoch=slice(tindx[0], tindx[1]))
+        
+        if ds_temp.epoch.size > 0:
+            timestamp =  np.datetime64(pd.to_datetime(tindx).mean(), 'ns')
+            # group by energy channel/mv_lo values
+            ds_e_avg = ds_temp.groupby('mv_lo').mean(skipna=True, engine='flox')
+            ds_e_avg = ds_e_avg.reindex({'mv_lo' : canonical_mv_lo}, fill_value=np.nan)
+            ds_e_avg = ds_e_avg.assign_coords({'time' : timestamp}).expand_dims('time')
+        else:
+            # Fill with nan values
+            timestamp = np.datetime64(tindx[0], 'ns') + np.timedelta64(int(1e9 * (smooth_seconds / 2)), 'ns')
+            ds_e_avg = xr.full_like(ds.isel(epoch=0), fill_value=np.nan)
+            ds_e_avg = ds_e_avg.assign_coords({'time': timestamp}).expand_dims('time')
+
+        reduced_list.append(ds_e_avg)
+        count += 1
+    return(reduced_list)
 
 def slow_smooth_spc(ds, smooth_seconds):
     '''
     This function will smooth the spc data to smooth_second resolution.
     '''
-    minimumCadence = np.min(np.diff(ds.time.data))
+    minimumCadence = np.min(np.diff(ds.epoch.data))
 
-    time_range_downsample = np.arange(ds.time.data[0],
-                                      ds.time.data[-1],
+    time_range_downsample = np.arange(ds.epoch.data[0],
+                                      ds.epoch.data[-1],
                                       np.timedelta64(smooth_seconds, 's'))
 
     if len(time_range_downsample) % 2 == 0:
@@ -79,14 +136,14 @@ def slow_smooth_spc(ds, smooth_seconds):
     reduced_list = []
     for tindx in tqdm(locs):
         # xarray.Dataset
-        ds_temp = ds.sel(time=slice(tindx[0], tindx[1]))
+        ds_temp = ds.sel(epoch=slice(tindx[0], tindx[1]))
         
         # 1D np.array
         mv_lo_temp = ds_temp.mv_lo.data
         mv_hi_temp = ds_temp.mv_hi.data
 
-        if ds_temp.time.size > 0:
-            timestamp = np.mean(ds_temp.time)
+        if ds_temp.epoch.size > 0:
+            timestamp = np.mean(ds_temp.epoch)
             
             mv_lo_new = np.full(mv_lo_temp.shape[1], np.nan)
             mv_hi_new = np.full(mv_lo_temp.shape[1], np.nan)

@@ -26,8 +26,9 @@ import datetime
 import json
 
 # Import user defined functions
-from functions.data_preprocessing import clean_variable as clean
-from functions.spc_current_to_rdf_v2 import derive_reduced_vdf
+from functions.data_preprocessing import xarray_clean_variable as clean
+from functions.data_preprocessing import clean_full_xarray
+from functions.spc_current_to_rdf import derive_reduced_vdf
 
 from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map
 from functions.spc_do_anisotropy_calc import perform_fitting_with_time_windows
@@ -121,14 +122,50 @@ def load_fields_data(trange, datatype, level, CREDENTIALS=None):
             
             return(filenames)
 
+def time_index(i):
+    if i == 0:
+        print("Encounter 17")
+        tstart = '2023-09-26T00:00:00' 
+        tend   = '2023-09-26T12:00:00'
+    if i == 1:
+        print("Encounter 22")
+        tstart = '2024-12-22T00:00:00' 
+        tend   = '2024-12-22T23:59:59'
+    if i == 2:
+        print("Encounter 21")
+        tstart = '2024-09-27T00:00:00' 
+        tend   = '2024-09-27T23:59:59'
+    if i == 3:
+        print("Encounter 20")
+        tstart = '2024-06-27T00:00:00' 
+        tend   = '2024-06-27T23:59:59'
+    if i == 4:
+        print("Encounter 19")
+        tstart = '2024-03-28T00:00:00' 
+        tend   = '2024-03-28T23:59:59'
+    if i == 5:
+        print("Encounter 18")
+        tstart = '2023-12-27T00:00:00' 
+        tend   = '2023-12-27T23:59:59'
+
+
+
+    return(tstart, tend)
+
 if __name__ == "__main__":
     # Set the time range that we are interested in
-    tstart = datetime.datetime(2023, 12, 24)
-    tend   = datetime.datetime(2024, 1, 2)
+    # tstart = '2023-09-26T00:00:00' #datetime.datetime(2023, 12, 25, 0, 0, 0)
+    # tend   = '2023-09-26T12:00:00' #datetime.datetime(2023, 12, 25, 23, 59, 59)
+    tstart, tend = time_index(4)
+
     trange = [tstart, tend]
-    trange_bfield = [tstart - datetime.timedelta(days= 1), tend + datetime.timedelta(days= 1)]
+    trange_bfield = [tstart, tend]
 
     date_str = str(tstart)[0:10] 
+    time_str1 = str(tstart)[11:]
+    time_str2 = str(tend)[11:]
+
+    # Here I should make a code that checks if the time range has an associated downsampled spectra. If not downsample it.
 
     # Load in the Downsampled 1s SPC data from KP compression
     data_ds = cdflib.xarray.cdf_to_xarray(f'{sys.path[0]}/input_data/SPC_DownsampledSpectra_{date_str}_1sec.cdf', to_datetime=True)
@@ -136,19 +173,30 @@ if __name__ == "__main__":
     angle_bins = 4  # degrees
     ani_bins = 30   # N-bins 0.03 to 15
 
-    uncert_map = gen_uncertainty_map(angle_bins, ani_bins)
+    uncert_map = gen_uncertainty_map(angle_bins, ani_bins)      # Need to make sure I have the latest and greatest uncertainty map!
 
+    # This is needed to load in private data. Though this should all be take into a general load routine somewhere. 
     credentials = load_config('config.json')
-
     
-    psp_bfield = pyspedas.psp.fields(trange_bfield,
-                                     datatype='mag_SC_1min',
+    btag = '4_Sa_per_Cyc'
+
+    psp_bfile = pyspedas.psp.fields(trange_bfield,
+                                     datatype=f'mag_SC_{btag}',
                                      level='l2',
-                                     notplot=False,
+                                     notplot=True,
                                      get_support_data=True,
                                      last_version=True,
-                                     username=credentials['psp']['fields']['username'],
-                                     password=credentials['psp']['fields']['password'])
+                                     downloadonly=True)#,
+                                    #  username=credentials['psp']['fields']['username'],
+                                    #  password=credentials['psp']['fields']['password'])
+
+    if len(psp_bfile) > 1:
+        psp_bfield = xr.concat(
+                        [cdflib.xarray.cdf_to_xarray(psp_bfile[i]).rename({f'epoch_mag_SC_{btag}' : 'epoch'}).drop_dims('epoch_mag_SC_zero') for i in range(len(psp_bfile))], 
+                        dim = 'epoch')
+    else:
+        psp_bfield = cdflib.xarray.cdf_to_xarray(psp_bfile[0]).rename({f'epoch_mag_SC_{btag}' : 'epoch'})
+    print('The magnetic field has been succesfully loaded!')
     
     psp_spc_l3  = pyspedas.psp.spc(trange=trange,
                                    datatype='l3i',
@@ -156,21 +204,13 @@ if __name__ == "__main__":
                                    notplot=True,
                                    downloadonly=True,
                                    get_support_data=True,
-                                   last_version=True,
-                                   username=credentials['psp']['sweap']['username'],
-                                   password=credentials['psp']['sweap']['password'])
-
-    psp_span_l3 = pyspedas.psp.spi(trange=trange,
-                                   datatype='spi_sf00',
-                                   level='L3',
-                                   notplot=True,
-                                   downloadonly=True,
-                                   get_support_data=True,
-                                   last_version=True,
-                                   username=credentials['psp']['sweap']['username'],
-                                   password=credentials['psp']['sweap']['password'])
+                                   last_version=True)#,
+                                #    username=credentials['psp']['sweap']['username'],
+                                #    password=credentials['psp']['sweap']['password'])
 
     spc_l3 = cdflib.xarray.cdf_to_xarray(psp_spc_l3[0], to_datetime=True, fillval_to_nan=True).rename({'Epoch' : 'time'})
+
+    spc_l3 = clean_full_xarray(spc_l3)
 
     # Drop full-scan values
     flag_is_1 = np.squeeze(np.argwhere(spc_l3.general_flag.data == 1))
@@ -231,30 +271,27 @@ if __name__ == "__main__":
     nan_count = np.sum(np.isnan(spc.mv_lo.data), axis=1)
     spc = spc.drop_isel(time=np.where(nan_count > 20))
 
-    spc_sel = spc       #.sel(time=slice(subint1, subint2))
-
     # TODO: Consider making my own function to do this smoothing after!
     # NOTE: I have already implemented a Box-Car windowing average.
-
     # Convert to get the Reduced VDF. Still using random factor to define the geometric factor!
-    spc_rdf = derive_reduced_vdf(spc_sel)
+    spc_rdf = derive_reduced_vdf(spc)
     
     # Now that the SPC has been delt with. let us fix the bfield
-    if 'psp_fld_l2_mag_SC_4_Sa_per_Cyc' in pytplot.tnames():
-        fields = clean(pytplot.data_quants['psp_fld_l2_mag_SC_4_Sa_per_Cyc'])
+    if 'psp_fld_l2_mag_SC_4_Sa_per_Cyc' in psp_bfield.data_vars:
+        fields = clean(psp_bfield['psp_fld_l2_mag_SC_4_Sa_per_Cyc'])
     else:    
-        fields = clean(pytplot.data_quants['psp_fld_l2_mag_SC_1min'])
-
-    # No longer need to use the subint values!
-    flds_sel = fields   
-    flds_1s  = fields.interp(time=spc_rdf.time)
+        fields = clean(psp_bfield['psp_fld_l2_mag_SC_1min'])
+    
+    # Interpolate the fields data onto the same time resolution.
+    flds_1s  = fields.interp(epoch=spc_rdf.time)
 
     # Interpolate the l3 Peak track data to the same time
     spc_l3_1s = spc_l3_peak.interp(time=spc.time, method='linear')
     
+
     # Now let us group over 4 second windows. 
     fit_seconds = 4
-    fit_steps = np.timedelta64(tend - tstart)/np.timedelta64(fit_seconds, 's')
+    fit_steps = np.timedelta64(np.datetime64(tend) - np.datetime64(tstart))/np.timedelta64(fit_seconds, 's')
     fit_time  = np.datetime64(tstart) + np.arange(fit_steps+1)*np.timedelta64(fit_seconds, 's')
 
     windows = np.squeeze(np.dstack([fit_time[0:-1:1], fit_time[1::1]]))
@@ -269,10 +306,9 @@ if __name__ == "__main__":
     result_xarray = values
 
     # Save our file.
-    cdflib.xarray.xarray_to_cdf(result_xarray, f'./Fit_Data/Fixed_RDF/{date_str}_xr_Fit_v2.cdf')
+    cdflib.xarray.xarray_to_cdf(result_xarray, f'./Fit_Data/Fixed_RDF/{date_str}_{time_str1}_to_{time_str2}_xr_Fit_v2.cdf')
 
     sys.exit()
-
 
     # Make everything into an array
     T_ani_avg = result_xarray.T_ani_avg #np.array(T_ani_avg)
@@ -282,57 +318,7 @@ if __name__ == "__main__":
     T_ani_psi = result_xarray.T_ani_psi #np.array(T_ani_psi)
     T_ani_chi = result_xarray.T_ani_chi #np.array(T_ani_chi)
 
-
-    np1 = dataset['np1']
-    
-    vp1_x = dataset['vp1_x']
-    vp1_y = dataset['vp1_y']
-    vp1_z = dataset['vp1_z']
-
-    vp_mag_span = np.sqrt(vp1_x**2 + vp1_y**2 + vp1_z**2)
-
-    T_perp  = dataset['Tperp1']
-    
-    T_ratio = dataset['Trat1']
-    T_para  = T_perp / T_ratio
-
-    T_total = T_perp + T_para
-
-    t = dataset['time']
-    time = [datetime.datetime.utcfromtimestamp(f) for f in np.array(t)]
-    
-    time_numpy = np.array([np.datetime64(f, 'ns') for f in time])
-
-    # Let us now get the SPC data that we need to have calculated
-    spc_4s = spc_rdf.resample(time='4S').mean(dim='time')
-
-    # Load spc L3 data
-    vp1_spc = clean(pytplot.data_quants['spp_spc_vp1_fit_SC'])
-    wp1_spc = clean(pytplot.data_quants['spp_spc_wp1_fit'])
-
-    # Now reduce the SPC L3 data to the 4s resolution and take the mean
-    vp1_spc_4s = vp1_spc.sel(time=slice(subint1, subint2)).resample(time='4S').mean()
-    wp1_spc_4s = wp1_spc.sel(time=slice(subint1, subint2)).resample(time='4S').mean()
-
-    t_spc_temp = ((c.m_p * (wp1_spc_4s.data**2) * (u.km/u.s)**2)/c.k_B).to('K')
-    t_spc_eV   = t_spc_temp * 8.617e-5
-
-    ts_spc = (spc_4s.time.data - np.datetime64('1975-01-01T00:00:00'))/np.timedelta64(1, 's')
-
-    ts_span = (time_numpy - np.datetime64('1975-01-01T00:00:00'))/np.timedelta64(1, 's')
-
-    # Interpolate 
-    T_ani_span = np.interp(ts_spc, ts_span, T_ratio)
-    v_span_x = np.interp(ts_spc, ts_span, vp1_x)
-    v_span_y = np.interp(ts_spc, ts_span, vp1_y)
-    v_span_z = np.interp(ts_spc, ts_span, vp1_z)
-
-    v_span_mag = np.sqrt(v_span_x**2 + v_span_y**2 + v_span_z**2)
-    T_span_tot = np.interp(ts_spc, ts_span, T_total)
-
-    cdflib.xarray_to_cdf(result_xarray, f'/home/michael/Research/pySolarWind/PSP/Encounter_Investigation/E17/spc_anisotropy_fit_{date_str}_v01.cdf')
-
-    PLOTTING = False
+    PLOTTING = True
     if PLOTTING:
         fig, ax = plt.subplots(3, figsize=(12, 8), sharex=True, layout='constrained')
 
@@ -341,13 +327,12 @@ if __name__ == "__main__":
         ax[0].plot(flds_1s.time.data, flds_1s.data[:,2], color='tab:blue', label=r'$B_z$')
         ax[0].legend(ncols=3)
 
-        ax[1].plot(time, T_ratio, color='tab:blue', linewidth=1, label='SPAN-i')
         ax[1].plot(result_xarray.time, T_ani_avg, color='k', linewidth=1, label='SPC')
         ax[1].fill_between(result_xarray.time, T_ani_avg - T_dp, T_ani_avg + T_dp, color='grey', alpha=0.4, label='Uncertainty')
 
         ax[0].set_xlim([result_xarray.time.data[0], result_xarray.time.data[-1]])
         ax[1].set_xlim([result_xarray.time.data[0], result_xarray.time.data[-1]])
-
+        ax[1].set_ylim([3e-1, 3e1])
         ax[1].set_yscale('log')
 
         ax[0].set_ylabel('1-min Average \n Magnetic Field [nT]', fontsize=20)
@@ -365,7 +350,6 @@ if __name__ == "__main__":
 
         fig, ax = plt.subplots(2, figsize=(12, 8), sharex=True, layout='constrained')
 
-        ax[0].plot(time, T_ratio, color='tab:blue', linewidth=1, label='SPAN')
         ax[0].plot(result_xarray.time, T_ani_avg, color='k', linewidth=1, label='Avg')
         ax[0].plot(result_xarray.time, T_ani_chi, color='tab:orange', linewidth=1, label=r'$\chi$')
         ax[0].plot(result_xarray.time, T_ani_psi, color='tab:green', linewidth=1, label=r'$\psi$')
@@ -386,9 +370,10 @@ if __name__ == "__main__":
                         
 
 
-
+        sys.exit()
 
         fig, ax = plt.subplots(2, figsize=(12,8), sharex=True, layout='constrained')
+
         ax[0].plot(result_xarray.time, np.linalg.norm(vp1_spc_4s, axis=1), color='k')
         ax[0].plot(spc_4s.time, v_span_mag, color='r', alpha=0.5)
 
