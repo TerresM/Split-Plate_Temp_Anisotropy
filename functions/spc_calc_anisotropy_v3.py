@@ -150,7 +150,7 @@ def _get_uncertainty(fit_vals, slope_error, Nz, field_error, flow_angle, calc_an
     if np.isnan(flow_angle):
         mapped_angle_index = -1    # Is this correct? Perhaps I just set the uncertainty to NaN?
     else:
-        mapped_angle_index = np.nanargmin(np.abs(flow_angle - angle_list))
+        mapped_angle_index = np.nanargmin(np.abs(np.abs(flow_angle) - angle_list))
 
     if np.isnan(calc_anisotropy):
         mapped_anisotropy_index = -1 
@@ -198,7 +198,7 @@ def compute_anisotropy(params_chi, slope_err_chi, Tani_chi,
     }
 
     combined_uncert = np.sqrt(chi["uncertainty"]**2 + psi["uncertainty"]**2) / 2
-    combined_uncert_delta_plus = np.sqrt((chi["uncertainty_delta_plus"] + psi["uncertainty_delta_plus"]**2)) / 2
+    combined_uncert_delta_plus = np.sqrt((chi["uncertainty_delta_plus"]**2 + psi["uncertainty_delta_plus"]**2)) / 2
     combined_uncert_delta_minus = np.sqrt((chi["uncertainty_delta_minus"]**2 + psi["uncertainty_delta_minus"]**2)) / 2
 
     # handle NaN cases
@@ -286,8 +286,41 @@ def compute_anisotropy_results(params_chi, slope_err_chi, Tani_chi,
         attrs=dict(Note=f"Fitting Results for {get_data(ds, 'epoch')[0]} to {get_data(ds, 'epoch')[-1]}")
     )
 
+# def get_support_values(ds):
+#     time = get_data(ds, 'epoch')
+
+#     support_scalar = [
+#         "np_fit", "np_moment",
+#         "wp_fit", "wp_moment"
+#     ]
+#     support_vector = [
+#         "vp_fit_SC", "vp_moment_SC"
+#     ]
+
+#     support_results = []
+#     for i in tqdm(range(len(time))):
+#         scalars = {v: get_data(ds, v) for v in support_scalar}
+#         vectors = {v: (("vector_index",), get_data(ds, v)) for v in support_vector}
+#         results = scalars | vectors
+#         support_results.append(results)
+
+#     return(xr.concat(support_results, dim='epoch'))
+
 def get_support_values(ds):
-    time = get_data(ds, 'epoch')
+    """
+    Extracts support quantities (e.g., np_fit, wp_moment, vp_fit_SC)
+    from the main dataset.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Input dataset, which may contain support quantities.
+
+    Returns
+    -------
+    xr.Dataset
+        A new dataset containing only the found support variables.
+    """
 
     support_scalar = [
         "np_fit", "np_moment",
@@ -297,16 +330,16 @@ def get_support_values(ds):
         "vp_fit_SC", "vp_moment_SC"
     ]
 
-    support_results = []
-    for i in range(tqdm(time)):
-        scalars = {v: get_data(ds, v) for v in support_scalar}
-        vectors = {v: (("vector_index",), get_data(ds, v)) for v in support_vector}
-        results = scalars | vectors
-        support_results.append(results)
+    all_support_vars = support_scalar + support_vector
 
-    return(xr.concat(support_results, dim='epoch'))
+    # Find which of these variables actually exist in the dataset
+    vars_to_keep = []
+    for var_name in all_support_vars:
+        if var_name in ds.data_vars:
+            vars_to_keep.append(var_name)
 
-
+    # Return a new dataset containing only those variables
+    return ds[vars_to_keep]
 
 def calculate_support_means_groups(ds, groups):
     """
@@ -383,8 +416,8 @@ def spc_calculate_anisotropy(ds, uncertainty_map, threshold = 0.5, NO_WEIGHTS=Fa
     peak_el = get_data(ds, 'peak_elevation')
 
     # Skipping the previous load of the average flow angles...
-    vx =  get_data(ds, 'vel_x')        # Defined from vx = vz tan(azimuth)
-    vy =  get_data(ds, 'vel_y')        # Defined from vy = vz tan(elevation)
+    vx =  get_data(ds, 'vel_x')          # Defined from vx = vz tan(azimuth)
+    vy =  get_data(ds, 'vel_y')          # Defined from vy = vz tan(elevation)
     vz = -get_data(ds, 'vel_mid')        # Negative included to keep SPC Frame convention
 
     # Now we are going to get the magnetic field data loaded in
@@ -510,7 +543,7 @@ def spc_calculate_anisotropy(ds, uncertainty_map, threshold = 0.5, NO_WEIGHTS=Fa
 
     return results
 
-def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGHTS=False, groups=None, WIN_MAX=None):
+def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGHTS=False, groups=None, WIN_MAX=None, USE_AVG_BFIELD=False):
     """
     Calculate SPC anisotropy either per timestamp or over user-defined groups.
 
@@ -554,23 +587,33 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
         mask_weights = np.isfinite(weights)
         weights = np.ones_like(weights)
 
-    # Package into Dataset for slicing
-    base = xr.Dataset(
-        dict(
-            vzbx=(["time", "dim"], vz_bx),
-            vzby=(["time", "dim"], vz_by),
-            vx=(["time", "dim"], vx),
-            vy=(["time", "dim"], vy),
-            rdf=(["time", "dim"], rdf),
-            weights=(["time", "dim"], weights),
-            mask=(["time", "dim"], mask_weights),
-            peak_az=("time", peak_az),
-            peak_el=("time", peak_el),
-            bvec=(["time", "vec"], bvec),
-            nvec=(["time", "vec"], nvec),
-        ),
-        coords=dict(time=time),
+    # --- Package into Dataset for slicing ---
+    # We change what's packaged based on the B-field averaging method
+    
+    base_dict = dict(
+        vx=(["time", "dim"], vx),
+        vy=(["time", "dim"], vy),
+        rdf=(["time", "dim"], rdf),
+        weights=(["time", "dim"], weights),
+        mask=(["time", "dim"], mask_weights),
+        peak_az=("time", peak_az),
+        peak_el=("time", peak_el),
+        bvec=(["time", "vec"], bvec),
     )
+
+    if not USE_AVG_BFIELD:
+        # Original method: Pre-calculate vzbx, vzby, and nvec
+        nvec = bvec / np.linalg.norm(bvec, axis=1)[:, None]
+        vz_bx = vz * nvec[:, 0][:, None]
+        vz_by = vz * nvec[:, 1][:, None]
+        base_dict['vzbx'] = (["time", "dim"], vz_bx)
+        base_dict['vzby'] = (["time", "dim"], vz_by)
+        base_dict['nvec'] = (["time", "vec"], nvec)
+    else:
+        # New method: Pass raw vz to calculate with avg_bfield inside loop
+        base_dict['vz'] = (["time", "dim"], vz)
+
+    base = xr.Dataset(base_dict, coords=dict(time=time))
 
     all_results = []
 
@@ -608,27 +651,11 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
         if block.time.size == 0:
             # nothing in window
             result_ds = compute_anisotropy_results(
-                np.nan * np.ones(2), 
-                np.nan,
-                np.nan,
-                np.nan * np.ones(2),
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                uncertainty_map,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                block_time,
-                ds,
-                [np.nan, np.nan, np.nan],
+                np.nan * np.ones(2), np.nan, np.nan,
+                np.nan * np.ones(2), np.nan, np.nan,
+                np.nan, np.nan, np.nan, uncertainty_map,
+                np.nan, np.nan, np.nan, np.nan, np.nan,
+                np.nan, np.nan, np.nan, block_time,ds, [np.nan, np.nan, np.nan],
             )
             all_results.append(result_ds)
             continue
@@ -643,46 +670,56 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
             # Stack all points in block
             valid_idx = block.mask.values
             weight_fits = block.weights.values[valid_idx]
-        
-        vzbx_fit = block.vzbx.values[valid_idx]     # These should all be 1D arrays.
-        vzby_fit = block.vzby.values[valid_idx]     # Meaning we can just fit all these points to get a result.
+
+        # Get vx and vy for fitting
         vx_fit = block.vx.values[valid_idx]
         vy_fit = block.vy.values[valid_idx]
+
+        # --- NEW: Get vzbx, vzby, and n_avg based on method ---
+        if not USE_AVG_BFIELD:
+            # Original Method: Use pre-calculated, stacked values
+            vzbx_fit = block.vzbx.values[valid_idx]
+            vzby_fit = block.vzby.values[valid_idx]
+            
+            # Calculate mean n-vector from the stack of n-vectors
+            block_nvec_avg = np.nanmean(block.nvec.values, axis=0)
+            block_nvec_avg /= np.linalg.norm(block_nvec_avg)
+        else:
+            # New Method: Use block-averaged B-field
+            
+            # Calculate mean B-field vector for the block
+            block_bvec_avg_calc = np.nanmean(block.bvec.values, axis=0)
+            
+            # Normalize it to get the single mean N-vector for the block
+            block_nvec_avg = block_bvec_avg_calc / np.linalg.norm(block_bvec_avg_calc)
+            
+            # Get all 'vz' values from the block
+            vz_all_in_block = block.vz.values
+            
+            # Calculate vz_bx and vz_by using the SINGLE average n-vector
+            # (vz (time, dim) * nvec_x (scalar))
+            vz_bx_block = vz_all_in_block * block_nvec_avg[0] 
+            vz_by_block = vz_all_in_block * block_nvec_avg[1] 
+            
+            # Apply the same mask as all other variables
+            vzbx_fit = vz_bx_block[valid_idx]
+            vzby_fit = vz_by_block[valid_idx]
+        # --- END NEW LOGIC ---
         
 
         if len(vzbx_fit) < 2 or len(vzby_fit) < 2:
             result_ds = compute_anisotropy_results(
-                np.nan * np.ones(2),
-                np.nan,
-                np.nan,
-                np.nan * np.ones(2),
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                uncertainty_map,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                np.nan,
-                block.peak_az.mean().item(),
-                block.peak_el.mean().item(),
-                block_time,
-                ds,
-                [np.nan, np.nan, np.nan],
+                np.nan * np.ones(2), np.nan, np.nan,
+                np.nan * np.ones(2), np.nan, np.nan,
+                np.nan, np.nan, np.nan, uncertainty_map,
+                np.nan, np.nan, np.nan, np.nan, np.nan,
+                np.nan, np.nan, np.nan, block_time,ds, [np.nan, np.nan, np.nan],
             )
             all_results.append(result_ds)
             continue
 
-        # mean n-vector
-        block_nvec = np.nanmean(block.nvec.values, axis=0)
-        block_nvec /= np.linalg.norm(block_nvec)
-
         # mean b-vector
-        block_bvec = np.nanmean(block.bvec.values, axis=0)
+        block_bvec_to_save = np.nanmean(block.bvec.values, axis=0)
 
         # Fits
         results_x = find_slopes(linear_model, vzbx_fit, vx_fit, 1.0 / weight_fits, "lm")
@@ -691,11 +728,11 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
         results_y = find_slopes(linear_model, vzby_fit, vy_fit, 1.0 / weight_fits, "lm")
         params_psi, cov_psi, psi_linear_fit, r_sq_psi, chi_sq_psi, slope_err_psi = results_y
 
-        alpha_chi, Tani_chi = _calc_anisotropy_from_fits(params_chi, block_nvec[2])
-        alpha_psi, Tani_psi = _calc_anisotropy_from_fits(params_psi, block_nvec[2])
+        alpha_chi, Tani_chi = _calc_anisotropy_from_fits(params_chi, block_nvec_avg[2])
+        alpha_psi, Tani_psi = _calc_anisotropy_from_fits(params_psi, block_nvec_avg[2])
 
-        xangle = np.degrees(np.arctan(block_nvec[0] / block_nvec[2]))
-        yangle = np.degrees(np.arctan(block_nvec[1] / block_nvec[2]))
+        xangle = np.degrees(np.arctan(block_nvec_avg[0] / block_nvec_avg[2]))
+        yangle = np.degrees(np.arctan(block_nvec_avg[1] / block_nvec_avg[2]))
 
         # --- NEW: average L3 values for this block ---
         l3_avgs = {}
@@ -712,12 +749,12 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
             params_psi,
             slope_err_psi,
             Tani_psi,
-            block_nvec[2],
+            block_nvec_avg[2],
             xangle,
             yangle,
             uncertainty_map,
-            block_nvec[0],
-            block_nvec[1],
+            block_nvec_avg[0],
+            block_nvec_avg[1],
             r_sq_chi,
             r_sq_psi,
             chi_sq_chi,
@@ -726,10 +763,8 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
             block.peak_el.mean().item(),
             block_time,
             ds,
-            block_bvec,
+            block_bvec_to_save,
         )
         all_results.append(result_ds)
-
-
 
     return xr.concat(all_results, dim="time")

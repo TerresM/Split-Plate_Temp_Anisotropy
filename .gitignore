@@ -10,3 +10,4 @@ psp_data/
 *.json
 *.csv
 *.txt
+*.pkl

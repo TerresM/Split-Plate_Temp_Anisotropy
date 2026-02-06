@@ -24,6 +24,26 @@ def smooth_spc_resample(ds, smooth_seconds, method='mean'):
 
     return ds_win_avg
 
+def smooth_spc_resample_last(ds, smooth_seconds, method='mean'):
+    '''
+    This function will smooth the spc data to smooth_second resolution.
+    '''
+    if 'mv_lo_dim' in ds.dims:
+        ds = ds.rename({'mv_lo_dim' : 'mv_index'})
+
+    # This function groups all data by unique times and mv_lo values.
+    # Since mv_lo is decideded by the instruments commanding we have a set number of mv_lo values.
+    ds_groupby = ds.groupby(['epoch', 'mv_lo']).last(skipna=True)
+
+    # Now we are going to resample the timeseries to the smooth seconds.
+    # Note we use the right most label and subtract half of the time time resolution to get the mean value.
+    if method.lower() == 'mean':
+        ds_win_avg   = ds_groupby.resample(epoch=f'{smooth_seconds}s', label='right', origin='start', offset=f'{smooth_seconds/2}s').mean(skipna=True)
+    if method.lower() == 'median':
+        ds_win_avg = ds_groupby.resample(epoch=f'{smooth_seconds}s', label='right', origin='start', offset=f'{smooth_seconds/2}s').median(skipna=True)
+
+    return ds_win_avg
+
 def smooth_spc(ds, smooth_seconds):
     '''
     This function will smooth the spc data to smooth_second resolution.

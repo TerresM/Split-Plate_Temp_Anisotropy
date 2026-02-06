@@ -108,6 +108,138 @@ def derive_reduced_vdf(spc_ds, DATASET=True):
 
     # Reduced rdf value, this is not quite accurate as it does not take into account the geometric factor. 
     # However, the geometric factor is removed once the re-normalization in the fitting is acheived. 
+    rdf = (total_current.data * 1e-12 * 10000) / (c.e.si * vel_mid * dv)
+
+    # If the differential charge flux is in the dataset lets include that
+    rdf_charge_flux = None
+    if 'diff_charge_flux_density' in list(ds.data_vars):
+        rdf_charge_flux = (ds['diff_charge_flux_density'].data * 1e-12 * 10000) / (c.e.si * vel_mid * dv)
+
+
+    # get the x and y components
+    vel_z_tan_az = vel_mid * np.tan(np.radians(azimuth.data))
+    vel_z_tan_el = vel_mid * np.tan(-np.radians(elevation.data))     # There is a negative sign here to conform with the y-sc direction!
+                                                                     # This value is very important to keep in!
+
+    if DATASET:
+        names = ['azimuth', 'elevation', 
+                 'total_current', 'mv_mid', 
+                 'vel_lo', 'vel_hi', 'vel_mid',
+                 'vel_x', 'vel_y', 'rdf']
+        
+        array_values = [azimuth.data,
+                        elevation.data,
+                        total_current.data,
+                        mv_mid,
+                        vel_lo.value,
+                        vel_hi.value,
+                        vel_mid.value,
+                        vel_z_tan_az.value,
+                        vel_z_tan_el.value,
+                        rdf.value]
+
+        array_units = ['Degrees',
+                       'Degrees',
+                       'Volts',
+                       'Volts',
+                       vel_lo.unit,
+                       vel_hi.unit,
+                       vel_mid.unit,
+                       vel_z_tan_az.unit,
+                       vel_z_tan_el.unit,
+                       rdf.unit]
+
+        for i, name in enumerate(names):
+            DA = xr.DataArray(array_values[i],
+                              dims=['epoch', 'dim'],
+                              coords=dict(epoch = ds.epoch.data,
+                                          dim = np.arange((ds.a_current.shape[1]))),
+                                          #mv_lo=(['epoch', 'vdim'], ds.mv_lo.data)),
+                              attrs=dict(UNIT = str(array_units[i]))
+                             )
+            ds[name] = DA
+
+        ds['peak_azimuth'] = (['epoch'], peak_azimuth)
+        ds['peak_elevation'] = (['epoch'], peak_elevation)
+
+        if rdf_charge_flux != None:
+            ds['rdf_charge_flux'] = (['epoch', 'dim'], rdf_charge_flux)
+
+        return(ds)
+    else:
+        return(0)
+    
+def kp_file_to_derived_reduced_vdf(kp_ds, DATASET=True):
+    '''
+    Derive the reduced VDF from the SPC Data.
+
+    Parameters:
+    -----------
+    kp_ds : xr.Dataset
+        Xarray.Dataset containing the ion VDF information.
+    
+    Returns:
+    --------
+    ds : xr.Dataset
+        kp_ds appended with the derived quantities.
+    '''
+    # Copy the initial xarray.Dataset
+    ds = kp_ds.copy()
+    ds = ds.rename({'dim0' : 'dim'})
+    ds = ds.rename({
+                    'spc_a_mean' : 'a_current',
+                    'spc_b_mean' : 'b_current',
+                    'spc_c_mean' : 'c_current',
+                    'spc_d_mean' : 'd_current',
+                   })
+
+    total_current = ds.a_current + ds.b_current + ds.c_current + ds.d_current
+
+    # Flow angles from SPC
+    # NOTE: After looking at the flow angle calculations form Mike, there is a factor of two that I am uncertain where
+    # it comes from. Following Tony's SPC paper the flow angles are lambda * (plate differences)/total, where the plate differences
+    # are the left-right and up-down current differences, and lambda is given to be ~1.009 = pi/2 * (r_la/d_la), where r is radius and d is distance 
+    # of the limiting appature. Therefore, following Tony's calculation to convert to degrees would be 180/pi. But 
+    # to keep with Mike's convention we need a 1/2 included.   
+    #
+    # I have preformed a recent test to compare the flow angle derived in the L2 SPC data set and the derived flow angle from the currents.
+    # It is noted that the factor of 2 is needed to ensure agreement between the two data sets. Therefore, for now I will include the 
+    # factor of 2! I am uncertain as to why this is the case.
+    #
+    # I believe this comes from doing the effective average between the up-down and left-right collector plates. 
+    lamda = 1.009
+
+    # The flow angles for each voltage bin.
+    azimuth   = (180/(2*np.pi)) * lamda * (((ds.a_current + ds.d_current) - (ds.b_current + ds.c_current))/total_current)   # In Degrees!
+    elevation = (180/(2*np.pi)) * lamda * (((ds.c_current + ds.d_current) - (ds.a_current + ds.b_current))/total_current)   # In Degrees
+
+    mv_mid = 0.5 * (ds.mv_hi.data + ds.mv_lo.data)      # This is obsolete...
+
+    # Flow angle. 
+    #
+    # NOTE: We need to make sure any spurious peaks are removed if not the max value will be incorrect.
+    # This should be checked in future versions of this code. 
+    peak_azimuth   = (180/(2*np.pi))* lamda *(((np.nanmax(ds.a_current.data, axis=1) + np.nanmax(ds.d_current.data, axis=1)) - (np.nanmax(ds.b_current.data, axis=1) + np.nanmax(ds.c_current.data, axis=1)))/np.nanmax(total_current.data, axis=1))   # In Degrees!
+    peak_elevation = (180/(2*np.pi))* lamda *(((np.nanmax(ds.c_current.data, axis=1) + np.nanmax(ds.d_current.data, axis=1)) - (np.nanmax(ds.a_current.data, axis=1) + np.nanmax(ds.b_current.data, axis=1)))/np.nanmax(total_current.data, axis=1))   # In Degrees
+
+    # Effective width of energy interval
+    eff_width      = (ds.mv_hi.data - ds.mv_lo.data)/2.
+    center_voltage = (ds.mv_hi.data + ds.mv_lo.data)/2.
+    
+    vel_lo  = np.sqrt(2 * c.e.si * ds.mv_lo.data * (u.Volt) / c.m_p).to(u.km/u.s)
+    vel_hi  = np.sqrt(2 * c.e.si * ds.mv_hi.data * (u.Volt) / c.m_p).to(u.km/u.s)
+
+    if np.ndim(vel_lo) < 2: vel_lo = vel_lo[None, :] * np.ones(len(ds.epoch.data))[:,None]
+    if np.ndim(vel_hi) < 2: vel_hi = vel_hi[None, :] * np.ones(len(ds.epoch.data))[:,None]
+    
+    # Using the complete elliptic intergral
+    vel_mid = np.sqrt(2 * c.e.si * ds.mv_hi.data * (u.Volt) / c.m_p).to(u.km/u.s) * (2.0/np.pi) * _E(ds.mv_lo.data, ds.mv_hi.data)
+
+    # Calculate the differential velocity
+    dv = np.sqrt((4 * (c.e.si)/(c.m_p) * (center_voltage) * (u.Volt)).to(u.km**2/u.s**2) - vel_mid**2)
+
+    # Reduced rdf value, this is not quite accurate as it does not take into account the geometric factor. 
+    # However, the geometric factor is removed once the re-normalization in the fitting is acheived. 
     rdf = total_current.data / (c.e.si * vel_mid * dv)
 
     # If the differential charge flux is in the dataset lets include that
@@ -155,7 +287,7 @@ def derive_reduced_vdf(spc_ds, DATASET=True):
                               coords=dict(epoch = ds.epoch.data,
                                           dim = np.arange((ds.a_current.shape[1]))),
                                           #mv_lo=(['epoch', 'vdim'], ds.mv_lo.data)),
-                              attrs=dict(UNIT = array_units[i])
+                              attrs=dict(UNIT = str(array_units[i]))
                              )
             ds[name] = DA
 
@@ -164,6 +296,10 @@ def derive_reduced_vdf(spc_ds, DATASET=True):
 
         if rdf_charge_flux != None:
             ds['rdf_charge_flux'] = (['epoch', 'dim'], rdf_charge_flux)
+        
+
+        ds = ds.where(ds != -1, np.nan)
+        ds = ds.set_coords('mv_lo')
 
         return(ds)
     else:
