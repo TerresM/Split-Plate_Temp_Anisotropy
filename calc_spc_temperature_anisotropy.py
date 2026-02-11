@@ -27,7 +27,7 @@ import functions.data_preprocessing as preprocess
 import functions.load_routines as load
 
 from functions.spc_current_to_rdf import derive_reduced_vdf, kp_file_to_derived_reduced_vdf
-from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map3
+from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map
 
 # TODO : Revisit this function to make sure the calculation is working correctly.
 from functions.spc_do_anisotropy_calc import perform_fitting_with_time_windows
@@ -80,7 +80,7 @@ def median_filter_current(spc_l2):
 
     return(spc_l2)
 
-def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', credentials=None, SAVE=True, FPATH='./input_data/', KP_FILE=None):
+def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', credentials=None, SAVE=True, FPATH='./input_data/', KP_FILE=None, OFFLINE=None):
     btag = data_vars['fields'].removeprefix('mag_SC_')
 
 
@@ -121,10 +121,13 @@ def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', 
     else:
         load_l2 = True
 
-   
-    # Can group into a single function. 
-    file_dict = load.load_data(mission='psp', datasets=data_vars, trange=trange, creds=credentials)
+    if OFFLINE:
+        file_dict = load.load_local_data_file(trange, datasets=data_vars, creds=credentials)
+    else:
+        # Can group into a single function. 
+        file_dict = load.load_data(mission='psp', datasets=data_vars, trange=trange, creds=credentials)
 
+    print(f'\n {file_dict['spc']['l3i']} \n')
     # Load in the l3 data set. This is fully a support function.
     spc_l3 = load.file_to_xarray(file_dict['spc']['l3i'])
 
@@ -242,19 +245,32 @@ def time_index(i):
 
 # This is where the core processing function will occur. 
 # NOTE: This runs an entire day at a time.
-def process_day(date_str, config_dict):
+def process_anisotorpy_spc_event(date_str, config_dict, subrange = None):
     '''
-    Docstring for process_day
+    Docstring for process_anisotorpy_spc_event
     
     :param date_str: Description
     :param config_dict: Description
+    :param subrage:
     '''
+    if subrange is not None:
+        tstart = subrange[0]
+        tend   = subrange[1]
+        range_desc = f"Subrange ({tstart} to {tend})"
+        is_subrange = True
+    else:
+        tstart = f"{date_str}T00:00:00"
+        tend   = f"{date_str}T23:59:59"
+        range_desc = "Full Day"
+        is_subrange = False
+    
     # Create full data timestamps
-    tstart = f"{date_str}T00:00:00"
-    tend   = f"{date_str}T23:59:59"
+    # tstart = f"{date_str}T00:00:00"
+    # tend   = f"{date_str}T23:59:59"
 
     print(f"\n{'='*50}")
-    print(f"PROCESSING DAY: {date_str} (Full Day)")
+    print(f"PROCESSING: {date_str}")
+    print(f"WINDOW:     {range_desc}")
     print(f"{'='*50}")
 
     try:
@@ -269,12 +285,23 @@ def process_day(date_str, config_dict):
         data_vars = config_dict['data_vars']
         credentials = config_dict['credentials']
         uncert_map = config_dict['uncert_map']
+
+        OFFLINE = config_dict['OFFLINE']
         
         trange = [tstart, tend]
 
         # Initialize Data 
         # (This likely loads the full daily CDF anyway, matching your requirements)
-        init_ds = initialize_fitting_data(trange, data_vars, smooth_seconds=smooth_seconds, mode=spc_mode, credentials=credentials)
+        init_ds = initialize_fitting_data(trange, data_vars, smooth_seconds=smooth_seconds, mode=spc_mode, credentials=credentials, OFFLINE=OFFLINE)
+
+        # This ensures that if the loader returned a full day, we only process the subrange.
+        print(f"Slicing data to range: {tstart} -- {tend}")
+        init_ds = init_ds.sel(epoch=slice(tstart, tend))
+
+        # Check if data exists in the window
+        if init_ds.epoch.size == 0:
+            print(f"No data found in range {tstart} to {tend}. Skipping.")
+            return
 
         # Get pico-Amp flags
         pa_flag = get_pA_flags(init_ds).rename({'epoch':'time'})
@@ -366,14 +393,15 @@ def process_day(date_str, config_dict):
 
 if __name__ == "__main__":
     pyspedas.psp.config.local_data_dir = 'psp_data'
+    pyspedas.psp.config.CONFIG['sweap_remote_data_dir'] = 'http://131.142.18.203/data/sci/'
 
     # 1. Configuration
     config = {
-        # 'fit_seconds':4,
-        'fit_seconds': None,
+        'fit_seconds':4,
+        # 'fit_seconds': None,
         'smooth_seconds': None,
-        # 'spc_mode': 'peak_track',
-        'spc_mode': 'full_scan',
+        'spc_mode': 'peak_track',
+        # 'spc_mode': 'full_scan',
         'no_weights': None,
         'win_max': False,
         'min_flux': 0.5,
@@ -384,19 +412,24 @@ if __name__ == "__main__":
             'spi_sf00' : ['L3']
         },
         'credentials': load_config('config.json'),
-        'uncert_map': gen_uncertainty_map3(4, 30) 
+        'uncert_map': gen_uncertainty_map(4, 30),
+        'OFFLINE':False, 
     }
     
     file_path = 'selected_dates.pkl'
 
     # Load the list (open file in 'rb' binary read mode)
     with open(file_path, 'rb') as f:
-        loaded_list = pickle.load(f)
+        loaded_dict = pickle.load(f)
+
+    loaded_list = [date for date_list in loaded_dict.values() for date in date_list]
 
     # dates_to_process = ['2024-06-23', '2024-06-24', '2024-06-25' , '2024-06-26', '2024-06-27']
-    # dates_to_process = ['2024-06-27']
+    dates_to_process = ['2023-12-27']
     # dates_to_process = loaded_list
 
+    ds = process_anisotorpy_spc_event(dates_to_process[0], config, subrange=['2023-12-27T04:30:00', '2023-12-27T04:45:00'])
+    '''
     cutoff = datetime(2022,1,1) 
 
     dates_to_process = [
@@ -409,113 +442,7 @@ if __name__ == "__main__":
     print(f"Queued {len(dates_to_process)} days for processing.")
     
     for date_str in tqdm(dates_to_process):
-        process_day(date_str, config)
+        process_anisotorpy_spc_event(date_str, config)
 
     print('All events completed!')
-
-'''
-if __name__ == "__main__":
-    pyspedas.psp.config.local_data_dir = 'psp_data'
-
-    # Set the time range that we are interested in
-    # tstart = '2023-12-25T00:00:00' 
-    # tend   = '2023-12-25T23:59:59' 
-    tstart = '2020-06-12T00:39:59'
-    tend   = '2020-06-12T23:59:59'
-
-    # tstart = '2024-10-03T09:39:59'
-    # tend   = '2024-10-03T10:02:26'
-    # tstart, tend = time_index(2)
-
-    trange = [tstart, tend]
-
-    fit_seconds = 4                 # How many seconds to perform linear fit over, None if fit applies each spectra
-    smooth_seconds = None           # Seconds to downsample SPC data. None if SPC cadence is sufficient.
-    spc_mode = 'peak_track'         # 'peak_track', 'full_scan', or 'all'. 
-    no_weights = None               # Weight the linear fitting or not. Should always be None, unless testing!
-    win_max = False                 # Needs fit_seconds not None. Normalize all VDFs to maximum VDF in window.
-    min_flux = 0.35                 # Minimum flux required for fitting. 0.5 is standard
-    avg_bfield = False              # Averaging applied to the background magnetic field. 
-
-    # Needed data
-    data_vars = {'spc' : ['l2i', 'l3i'],
-                 'fields' : 'mag_SC_4_Sa_per_Cyc',
-                #  'fields' : 'mag_SC_1min',
-                 'spi_sf00' : ['L3']}
-    
-    # Used to load in private data.
-    credentials = load_config('config.json')
-
-    # Load in the predefined uncertainty map from simulations.
-    angle_bins = 4  # degrees
-    ani_bins = 30   # N-bins 0.03 to 15
-    uncert_map = gen_uncertainty_map(angle_bins, ani_bins) 
-
-    # kp_file = f'/home/michael/Research/pySolarWind/SPC_DownsampledSpectra_2023-09-26_1sec.cdf'
-
-    init_ds = initialize_fitting_data(trange, data_vars, smooth_seconds=smooth_seconds, mode=spc_mode) #, KP_FILE=kp_file)
-
-    # pico-Amp flag
-    pa_flag = get_pA_flags(init_ds).rename({'epoch':'time'})
-    
-    if fit_seconds != None:
-        fit_steps = np.timedelta64(np.datetime64(tend, 'ns') - np.datetime64(tstart))/np.timedelta64(fit_seconds, 's')
-        fit_time  = np.datetime64(tstart, 'ns') + np.arange(fit_steps+1)*np.timedelta64(fit_seconds, 's')
-
-        windows = np.squeeze(np.dstack([fit_time[0:-1:1], fit_time[1::1]]))
-
-        subset = init_ds.drop_vars([v for v in init_ds.data_vars if v not in ["a_current", "b_current", "c_current", "d_current"]])
-        ds_groupby = subset.groupby(['epoch', 'mv_lo']).mean(skipna=True)
-        binned_ds = ds_groupby.groupby_bins('epoch', fit_time).mean(skipna=True)
-
-        midpoints = binned_ds.epoch_bins.to_index().mid
-        binned_ds = binned_ds.assign_coords(epoch=('epoch_bins', midpoints))
-        binned_ds = binned_ds.swap_dims({"epoch_bins":"epoch"}).drop_vars("epoch_bins")
-
-        pa_flag = get_pA_flags(binned_ds).rename({'epoch': 'time'})
-
-        if no_weights:
-            spc_anisotropy = spc_calculate_anisotropy_groups(init_ds, uncert_map, threshold=min_flux, NO_WEIGHTS=no_weights, groups=windows, WIN_MAX=win_max, USE_AVG_BFIELD=avg_bfield)    
-        else:
-            spc_anisotropy = spc_calculate_anisotropy_groups(init_ds, uncert_map, threshold=min_flux, groups=windows, WIN_MAX=win_max, USE_AVG_BFIELD=avg_bfield)
-
-        support_spc = calculate_support_means_groups(init_ds, groups=windows).rename({'epoch' : 'time'})
-    else:
-        if no_weights:
-            spc_anisotropy = spc_calculate_anisotropy(init_ds, uncert_map, NO_WEIGHTS=True, threshold=min_flux)
-        else:
-            spc_anisotropy = spc_calculate_anisotropy(init_ds, uncert_map, threshold=min_flux)
-
-        support_spc = get_support_values(init_ds).rename({'epoch' : 'time'})
-
-    spc_anisotropy = xr.merge([spc_anisotropy, pa_flag, support_spc])
-
-    # --- Step 2: Build filename tag ---
-    tags = []
-    if smooth_seconds:
-        if isinstance(smooth_seconds, int):
-            tags.append(f"{int(smooth_seconds)}s")
-        elif smooth_seconds % 1 != 0:
-            print("Adjusting smooth_seconds tag to millisecond resolution.")
-            smooth_seconds = int(smooth_seconds * 1000)
-            tags.append(f"{smooth_seconds}ms")
-
-    if fit_seconds:
-        tags.append(f"averaged_{fit_seconds}s")
-
-    if no_weights:
-        tags.append('nw')
-
-    if win_max:
-        tags.append('winmax')
-
-    tag_str = "_" + "_".join(tags) if tags else ""
-
-    if avg_bfield:
-        filename = f"./anisotropy_files/SPC_Anisotropy_{trange[0][:10]}_{spc_mode}_bavg_{tag_str}"
-    else:
-        filename = f"./anisotropy_files/SPC_Anisotropy_{trange[0][:10]}_{spc_mode}{tag_str}"
-
-    # --- Step 3: Save ---
-    cdflib.xarray.xarray_to_cdf(spc_anisotropy, filename)
-'''
+    '''

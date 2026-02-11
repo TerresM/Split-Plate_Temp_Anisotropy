@@ -5,6 +5,8 @@ import xarray as xr
 from tqdm import tqdm
 from scipy.optimize import curve_fit
 
+from . import diagnostic_plots as plots
+
 def get_data(obj, key):
     '''
     Helper function that delineates between dictonary and xarray.
@@ -538,6 +540,8 @@ def spc_calculate_anisotropy(ds, uncertainty_map, threshold = 0.5, NO_WEIGHTS=Fa
                                peak_el[i], time[i], ds, bvec[i])
 
         all_results.append(result_ds)
+
+        if i == 100: plots.rdf_fit_diagnostic_plot_individual(ds, vx[i], vy[i], vz_bx[i], vz_by[i], rdf[i], time[i], result_ds)
     
     results = xr.concat(all_results, dim='time')
 
@@ -620,8 +624,9 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
     # Case 1: groups not provided → one per timestamp
     if groups is None:
         groups = [(t, t) for t in time.values]
-
+    count = 0
     for (t0, t1) in tqdm(groups):
+        count += 1
         block = base.sel(time=slice(t0, t1))
 
         # Drop all the NaN b-field elements
@@ -717,7 +722,7 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
             )
             all_results.append(result_ds)
             continue
-
+        
         # mean b-vector
         block_bvec_to_save = np.nanmean(block.bvec.values, axis=0)
 
@@ -766,5 +771,7 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
             block_bvec_to_save,
         )
         all_results.append(result_ds)
+
+        if count == 100: plots.rdf_fit_diagnostic_plot_for_groups(ds, block, block_time, result_ds)
 
     return xr.concat(all_results, dim="time")
