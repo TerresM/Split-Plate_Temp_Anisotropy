@@ -129,7 +129,7 @@ if __name__ == "__main__":
     # print("COPY THIS LIST INTO 'dates_to_process':")
     # print("="*40)
     # print(final_unique_dates)
-
+    sys.exit()
     # Save the list (open file in 'wb' binary write mode)
     with open(file_path, 'wb') as f:
         pickle.dump(final_unique_dates, f)

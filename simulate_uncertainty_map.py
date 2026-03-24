@@ -84,14 +84,14 @@ def run_uncertainty_simulation(NANI, NTH, L=16):
     THRESHOLD = 0.5
 
     # Define the SPC model like parameters
-    PEAK_CURRENT  = 30.0   # pA: This value is typical of the solar wind.
+    PEAK_CURRENT  = 100.0   # pA: This value is typical of the solar wind.
     NOISE_CURRENT = 1.0     # pA: This is the defined average noise value. 
                             # Note: we can make this velocity dependent sigma_v = sigma_I/v^2.
 
     # Define the SPC VZ grid
-    vz_spc = np.geomspace(138, 875, L)     # 32 voltage windows. This should be adjusted to match
+    # vz_spc = np.geomspace(138, 875, L)     # 32 voltage windows. This should be adjusted to match
                                             # the peak track windows. 
-    # vz_spc = np.geomspace(250, 550, L)
+    vz_spc = np.geomspace(250, 550, L)
 
     # Define the values we are solving for
     delta_plus = np.zeros((NANI, NTH))

@@ -1,6 +1,8 @@
 __pycache__
 pydata/
 psp_data/
+spice_data/
+v00/
 *.cdf
 *.ipynb
 *.png
@@ -11,3 +13,4 @@ psp_data/
 *.csv
 *.txt
 *.pkl
+*.zip

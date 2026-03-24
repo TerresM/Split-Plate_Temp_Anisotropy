@@ -127,8 +127,8 @@ def rdf_fit_diagnostic_plot_for_groups(init_ds, block, block_time, result_ds):
     cbar = fig.colorbar(pm, ax=ax[:], location='right', aspect=40, pad=0.02)
     cbar.set_label('Normalized Phase Space Density', fontsize=12)
     fig.align_ylabels(ax[:])
-    # plt.show()
-    # input()
+    plt.show()
+    input()
 
 
 def rdf_fit_diagnostic_plot_individual(init_ds, vx, vy, vz_bx, vz_by, rdf, fit_time, result_ds):
@@ -169,6 +169,8 @@ def rdf_fit_diagnostic_plot_individual(init_ds, vx, vy, vz_bx, vz_by, rdf, fit_t
 
     cmap = new_cmap
 
+    cmap.set_under("#dde1e8")
+
     v_min, v_max = 3e-1, 1   # Fix these to keep colors consistent across panels
     norm = LogNorm(vmin=v_min, vmax=v_max)
 
@@ -183,12 +185,13 @@ def rdf_fit_diagnostic_plot_individual(init_ds, vx, vy, vz_bx, vz_by, rdf, fit_t
 
     # ax[0].set_yscale('log')
     ax[0].set_ylabel('$v_z$ [km/s]', fontsize=12)
-    ax[0].set_title('SPC Normalized Reduced Distribution Function', fontsize=14)
+    # ax[0].set_title('SPC Normalized Reduced Distribution Function', fontsize=14)
+    ax[0].set_title(f'SPC Normalized Reduced Distribution Function | {str(fit_time)[:20]} \n $T_\\perp/T_\\parallel = {result_ds.T_ani_avg.data:.2f}\\pm{result_ds.T_ani_avg_uncert.data:.2f}$', fontsize=14)
     ax[0].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 
 
     # 1. Create Masks
-    mask_low = normed_vdf < 0.5
+    mask_low = normed_vdf < 0.35
     mask_high = ~mask_low
 
     # --- PANEL 2: Vx vs Vz Slice ---
@@ -210,7 +213,7 @@ def rdf_fit_diagnostic_plot_individual(init_ds, vx, vy, vz_bx, vz_by, rdf, fit_t
     fit_line_x = result_ds.slope_chi.data * xx_range + result_ds.intercept_chi.data
     fit_line_y = result_ds.slope_psi.data * xy_range + result_ds.intercept_psi.data
 
-    ax[1].plot(xx_range, fit_line_x, 'r-', lw=2, label=f'Fit Slope: {result_ds.slope_chi.data:.2f}', zorder=0)
+    ax[1].plot(xx_range, fit_line_x, 'r-', lw=2, label=f'$\\chi$ = {result_ds.slope_chi.data:.2f}, $T_\\perp/T_\\parallel$ = {result_ds.T_ani_chi.data:.2f}', zorder=0)
 
     ax[1].set_ylabel('$v_x$ [km/s]', fontsize=12)
     ax[1].set_xlabel('$v_z \cdot b_x$ [nT (km/s)]', fontsize=12)
@@ -229,7 +232,7 @@ def rdf_fit_diagnostic_plot_individual(init_ds, vx, vy, vz_bx, vz_by, rdf, fit_t
                   c='white', edgecolors='grey', linewidth=1.0, linestyle='-', s=50, zorder=2)
     
     # Plot Fit Line
-    ax[2].plot(xy_range, fit_line_y, 'r-', lw=2, label=f'Fit Slope: {result_ds.slope_psi.data:.2f}', zorder=0)
+    ax[2].plot(xy_range, fit_line_y, 'r-', lw=2, label=f'$\\psi$ = {result_ds.slope_psi.data:.2f}, $T_\\perp/T_\\parallel$ = {result_ds.T_ani_psi.data:.2f}', zorder=0)
 
     ax[2].set_ylabel('$v_y$ [km/s]', fontsize=12)
     ax[2].set_xlabel('$v_z \cdot b_y$ [nT (km/s)]', fontsize=12)

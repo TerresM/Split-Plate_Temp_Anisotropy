@@ -170,16 +170,82 @@ def _get_uncertainty(fit_vals, slope_error, Nz, field_error, flow_angle, calc_an
 
     delta_mag = np.sqrt(delta_plus**2 + delta_minus**2 + std**2)
 
-    return(delta_plus, delta_minus, std, delta_mag)
+    components = [(part_tani_part_slope * slope_error)**2, (part_tani_part_Nz_chi * field_error)**2]
+
+    return(delta_plus, delta_minus, std, delta_mag, components)
+
+def _get_uncertainty2(fit_vals, slope_error, Nz, field_error, flow_angle, calc_anisotropy, uncertainty_map):
+    '''
+    This function will calculate the upper and lower bound uncertainties from 
+    a simulated ion VDF response to the given functions. 
+    
+    Parameters:
+    ----------
+    fit_vals : np.array
+        Array containing the linear fits from temperature anisotropy measurement.
+    slope_error : float
+        Value corresponding to the error in the corresponding fit values.
+    Nz : float
+        Magnetic field normal direction in SPC frame.
+    field_error : float
+        Error associated with magnetic field measurements. Assumed to be 1 nT.
+    flow_angle : np.array
+        Magnetic field flow angle.
+    calc_anisotropy : float
+        Calculated anisotropy value form the given linear fit
+    uncertainty_map : np.array
+        Contains the lookup table information for the corresponding uncertainties.
+
+    Return:
+    -------
+    delta_plus : float
+        Upper uncertainty value
+    delta_minus : float
+        Lower Uncertainty value
+    std : float
+        Standard deviation of measurement
+    delta_mag :
+        magnitude of the upper and lower delta
+    '''
+    # First load in the uncertainty maps
+    angle_list, ani_list, anisotropy_delta_plus, anisotropy_delta_minus = uncertainty_map
+
+    if np.isnan(flow_angle):
+        mapped_angle_index = -1    # Is this correct? Perhaps I just set the uncertainty to NaN?
+    else:
+        mapped_angle_index = np.nanargmin(np.abs(np.abs(flow_angle) - angle_list))
+
+    if np.isnan(calc_anisotropy):
+        mapped_anisotropy_index = -1 
+    else:
+        mapped_anisotropy_index = np.nanargmin(np.abs(calc_anisotropy - ani_list))
+
+    delta_plus  = anisotropy_delta_plus[mapped_angle_index, mapped_anisotropy_index]
+    delta_minus = anisotropy_delta_minus[mapped_angle_index, mapped_anisotropy_index]
+
+    # Now get the standard deviation
+    part_tani_part_slope = -Nz / ((1 - Nz**2) * fit_vals[0] + Nz)**2
+    part_tani_part_Nz_chi = (fit_vals[0] - 2. * Nz * fit_vals[0]**2)/ ((1 - Nz**2) * fit_vals[0] + Nz)**2 
+
+    std = np.sqrt((part_tani_part_slope * slope_error)**2 + (part_tani_part_Nz_chi * field_error)**2)
+
+    delta_mag = np.sqrt(np.max((np.abs(delta_plus), np.abs(delta_minus)))**2 + std**2)
+
+    components = [(part_tani_part_slope * slope_error)**2, (part_tani_part_Nz_chi * field_error)**2]
+
+    return(delta_plus, delta_minus, std, delta_mag, components)
+
 
 def compute_anisotropy(params_chi, slope_err_chi, Tani_chi,
                        params_psi, slope_err_psi, Tani_psi,
-                       Nz_calc, xangle, yangle, uncertainty_map):
+                       Nz_calc, xangle, yangle, uncertainty_map, Bmag):
 
     # helper to unpack uncertainty for one direction
-    def anisotropy_uncertainty(params, slope_err, angle, Tani):
-        delta_plus, delta_minus, std, delta_mag = _get_uncertainty(
-            params, slope_err, Nz_calc, 1, angle, Tani, uncertainty_map
+    def anisotropy_uncertainty(params, slope_err, angle, Tani, Nz, Bmag):
+        sigma_b = ((1 - Nz**2)/Bmag**2)
+        # sigma_b = 0
+        delta_plus, delta_minus, std, delta_mag, components = _get_uncertainty(
+            params, slope_err, Nz_calc, sigma_b, angle, Tani, uncertainty_map
         )
         return {
             "anisotropy": Tani,
@@ -187,44 +253,225 @@ def compute_anisotropy(params_chi, slope_err_chi, Tani_chi,
             "uncertainty_delta_plus": delta_plus,
             "uncertainty_delta_minus": delta_minus,
             "fit_uncertainty": std**2,
+            'components': components,
+        }
+    
+        # helper to unpack uncertainty for one direction
+    def anisotropy_uncertainty2(params, slope_err, angle, Tani, Nz, Bmag):
+        sigma_b = ((1 - Nz**2)/Bmag**2)
+        # sigma_b = 0
+        delta_plus, delta_minus, std, delta_mag, components = _get_uncertainty2(
+            params, slope_err, Nz_calc, sigma_b, angle, Tani, uncertainty_map
+        )
+        return {
+            "anisotropy": Tani,
+            "uncertainty": delta_mag,
+            "uncertainty_delta_plus": delta_plus,
+            "uncertainty_delta_minus": delta_minus,
+            "fit_uncertainty": std**2,
+            'components': components,
         }
 
-    chi = anisotropy_uncertainty(params_chi, slope_err_chi, xangle, Tani_chi)
-    psi = anisotropy_uncertainty(params_psi, slope_err_psi, yangle, Tani_psi)
+    # OLD_AVERAGING = False
+    # MODE = 'geometric'
+    # MODE = 'symmetric'
+    MODE = 'asymmetric'
 
-    # combined magnitudes
-    combined_delta_mag = np.sqrt(chi["uncertainty"]**2 + psi["uncertainty"]**2)
-    weights = {
-        "chi": 1.0 / (chi["uncertainty"] / combined_delta_mag),
-        "psi": 1.0 / (psi["uncertainty"] / combined_delta_mag),
-    }
+    
+    if MODE == 'geometric':
+        print(f"Using the {MODE} fitting routine.")
+        chi = anisotropy_uncertainty(params_chi, slope_err_chi, xangle, Tani_chi, Nz_calc, Bmag)
+        psi = anisotropy_uncertainty(params_psi, slope_err_psi, yangle, Tani_psi, Nz_calc, Bmag)
 
-    combined_uncert = np.sqrt(chi["uncertainty"]**2 + psi["uncertainty"]**2) / 2
-    combined_uncert_delta_plus = np.sqrt((chi["uncertainty_delta_plus"]**2 + psi["uncertainty_delta_plus"]**2)) / 2
-    combined_uncert_delta_minus = np.sqrt((chi["uncertainty_delta_minus"]**2 + psi["uncertainty_delta_minus"]**2)) / 2
+        # combined magnitudes
+        combined_delta_mag = np.sqrt(chi["uncertainty"]**2 + psi["uncertainty"]**2)
+        weights = {
+            "chi": 1.0 / (chi["uncertainty"] / combined_delta_mag),
+            "psi": 1.0 / (psi["uncertainty"] / combined_delta_mag),
+        }
 
-    # handle NaN cases
-    if np.isnan(chi["anisotropy"]) and np.isnan(psi["anisotropy"]):
-        avg = {k: np.nan for k in [
-            "anisotropy", "uncertainty", "uncertainty_delta_plus",
-            "uncertainty_delta_minus", "fit_uncertainty"
-        ]}
-    elif np.isnan(chi["anisotropy"]):
-        avg = psi
-    elif np.isnan(psi["anisotropy"]):
-        avg = chi
+        combined_uncert = np.sqrt(chi["uncertainty"]**2 + psi["uncertainty"]**2) / 2
+        combined_uncert_delta_plus = np.sqrt((chi["uncertainty_delta_plus"]**2 + psi["uncertainty_delta_plus"]**2)) / 2
+        combined_uncert_delta_minus = np.sqrt((chi["uncertainty_delta_minus"]**2 + psi["uncertainty_delta_minus"]**2)) / 2
+
+        # handle NaN cases
+        if np.isnan(chi["anisotropy"]) and np.isnan(psi["anisotropy"]):
+            avg = {k: np.nan for k in [
+                "anisotropy", "uncertainty", "uncertainty_delta_plus",
+                "uncertainty_delta_minus", "fit_uncertainty"
+            ]}
+        elif np.isnan(chi["anisotropy"]):
+            avg = psi
+        elif np.isnan(psi["anisotropy"]):
+            avg = chi
+        else:
+            diff = np.abs(chi["anisotropy"] - psi["anisotropy"])
+            avg = {
+                "anisotropy": (weights["chi"] * chi["anisotropy"] + weights["psi"] * psi["anisotropy"]) /
+                            (weights["chi"] + weights["psi"]),
+                "uncertainty": combined_uncert + diff / np.sqrt(2),
+                "uncertainty_delta_plus": np.sqrt(combined_uncert_delta_plus**2 + diff**2 / 2.0),
+                "uncertainty_delta_minus": np.sqrt(combined_uncert_delta_minus**2 + diff**2 / 2.0),
+                "fit_uncertainty": np.sqrt(chi["fit_uncertainty"] + psi["fit_uncertainty"]),
+            }
+
+        return chi, psi, avg
+    elif MODE == 'symmetric':
+        print(f"Using the {MODE} fitting routine.")
+        # Get the uncertainty values. 
+        chi = anisotropy_uncertainty2(params_chi, slope_err_chi, xangle, Tani_chi, Nz_calc, Bmag)
+        psi = anisotropy_uncertainty2(params_psi, slope_err_psi, yangle, Tani_psi, Nz_calc, Bmag)
+
+        ani_chi, sigma_chi = chi["anisotropy"], chi["uncertainty"]
+        ani_psi, sigma_psi = psi["anisotropy"], psi["uncertainty"]
+
+        sigma_2_chi = sigma_chi**2
+        sigma_2_psi = sigma_psi**2
+
+        w_chi = 1.0/sigma_2_chi
+        w_psi = 1.0/sigma_2_psi
+
+        w_sum = w_chi + w_psi
+
+        ani_avg = (w_chi * ani_chi + w_psi * ani_psi) / w_sum
+
+        sigma_avg = 1.0 / np.sqrt(w_sum)
+
+        delta_plus_avg  = np.sqrt((w_chi * chi["uncertainty_delta_plus"]**2 + w_psi * psi["uncertainty_delta_plus"]**2) / w_sum)
+        delta_minus_avg = np.sqrt((w_chi * chi["uncertainty_delta_minus"]**2 + w_psi * psi["uncertainty_delta_minus"]**2) / w_sum)
+
+        fit_uncert_avg = np.sqrt((w_chi * chi["fit_uncertainty"]**2 + w_psi * psi["fit_uncertainty"]**2) / w_sum)
+
+         # handle NaN cases
+        if np.isnan(chi["anisotropy"]) and np.isnan(psi["anisotropy"]):
+            avg = {k: np.nan for k in [
+                "anisotropy", "uncertainty", "uncertainty_delta_plus",
+                "uncertainty_delta_minus", "fit_uncertainty"
+            ]}
+        elif np.isnan(chi["anisotropy"]):
+            avg = psi
+        elif np.isnan(psi["anisotropy"]):
+            avg = chi
+        else:
+            diff = np.abs(chi["anisotropy"] - psi["anisotropy"])
+            avg = {
+                "anisotropy": ani_avg,
+                "uncertainty": sigma_avg,
+                "uncertainty_delta_plus": delta_plus_avg,
+                "uncertainty_delta_minus": delta_minus_avg,
+                "fit_uncertainty": fit_uncert_avg,
+            }
+
+        return chi, psi, avg
+    elif MODE == 'asymmetric':
+        # print(f"Using the {MODE} fitting routine.")
+        chi = anisotropy_uncertainty(params_chi, slope_err_chi, xangle, Tani_chi, Nz_calc, Bmag)
+        psi = anisotropy_uncertainty(params_psi, slope_err_psi, yangle, Tani_psi, Nz_calc, Bmag)
+
+        a_chi = chi["anisotropy"]
+        a_psi = psi["anisotropy"]
+
+        # Handle NaN cases gracefully
+        if np.isnan(a_chi) and np.isnan(a_psi):
+            avg = {k: np.nan for k in [
+                "anisotropy", "uncertainty", "uncertainty_delta_plus",
+                "uncertainty_delta_minus", "fit_uncertainty"
+            ]}
+        elif np.isnan(a_chi):
+            avg = psi.copy()
+        elif np.isnan(a_psi):
+            avg = chi.copy()
+        else:
+            v_chi, gamma_chi = compute_moments(chi['uncertainty_delta_plus'], chi['uncertainty_delta_minus'], np.sqrt(chi['fit_uncertainty']))
+            v_psi, gamma_psi = compute_moments(psi['uncertainty_delta_plus'], psi['uncertainty_delta_minus'], np.sqrt(psi['fit_uncertainty']))
+
+            w_chi = 1.0/v_chi
+            w_psi = 1.0/v_psi
+        
+            w_sum = w_chi + w_psi
+
+            c_chi = w_chi/w_sum
+            c_psi = w_psi/w_sum
+
+            avg_ani = c_chi * a_chi + c_psi * a_psi
+
+            v_avg = 1.0/w_sum
+            gamma_avg = (c_chi**3) * gamma_chi + (c_psi**3) * gamma_psi
+
+            sig_plus, sig_minus = extract_asymmetric_bounds(v_avg, gamma_avg)
+
+            fit_uncert_avg_variance = (w_chi**2 * chi['fit_uncertainty'] + w_psi**2 * psi['fit_uncertainty']) / w_sum**2
+
+            avg = {
+                "anisotropy": avg_ani,
+                "uncertainty": max(sig_plus, sig_minus), # Conservative 1D uncertainty
+                "uncertainty_delta_plus": sig_plus,
+                "uncertainty_delta_minus": sig_minus,
+                "fit_uncertainty": fit_uncert_avg_variance,
+            }
+        return chi, psi, avg
+
     else:
-        diff = np.abs(chi["anisotropy"] - psi["anisotropy"])
-        avg = {
-            "anisotropy": (weights["chi"] * chi["anisotropy"] + weights["psi"] * psi["anisotropy"]) /
-                          (weights["chi"] + weights["psi"]),
-            "uncertainty": combined_uncert + diff / np.sqrt(2),
-            "uncertainty_delta_plus": np.sqrt(combined_uncert_delta_plus**2 + diff**2 / 2.0),
-            "uncertainty_delta_minus": np.sqrt(combined_uncert_delta_minus**2 + diff**2 / 2.0),
-            "fit_uncertainty": np.sqrt(chi["fit_uncertainty"] + psi["fit_uncertainty"]),
-        }
+        return(0)
 
-    return chi, psi, avg
+
+def compute_moments(delta_plus, delta_minus, std_fit):
+    dp, dm = np.abs(delta_plus), np.abs(delta_minus)
+
+    diff = dp - dm
+    sum_sq = dp**2 + dm**2
+
+    # Dimidiated Gaussian Moments
+    v_eff = 0.5*sum_sq - (1.0 / (2.0 * np.pi)) * diff**2
+    gamma = (1.0 / np.sqrt(2.0 * np.pi)) * (2.0 * (dp**3 - dm**3) - 1.5 * diff * sum_sq + (1.0 / np.pi) * diff**3)
+
+    v_tot = v_eff + std_fit**2
+    
+    return v_tot, gamma
+
+def extract_asymmetric_bounds(v_avg, gamma_avg):
+    if np.isclose(gamma_avg, 0.0):
+        sigma = np.sqrt(v_avg)
+        return sigma, sigma
+
+    C = (5.0 / (2.0 * np.pi)) - 1.0
+    p = (3.0 * v_avg) / C
+    q = (-np.sqrt(2.0 * np.pi) * gamma_avg) / C
+    
+    discriminant = (q / 2.0)**2 + (p / 3.0)**3
+    
+    if discriminant > 0:
+        # One real root
+        u = -q / 2.0 + np.sqrt(discriminant)
+        v = -q / 2.0 - np.sqrt(discriminant)
+        D = np.cbrt(u) + np.cbrt(v)
+    else:
+        # Three real roots (Trigonometric fallback)
+        val = (3.0 * q / (2.0 * p)) * np.sqrt(-3.0 / p)
+        val = np.clip(val, -1.0, 1.0) # Prevent floating point errors in arccos
+        theta = np.arccos(val)
+        
+        roots = [
+            2.0 * np.sqrt(-p / 3.0) * np.cos((theta - 2.0 * np.pi * k) / 3.0)
+            for k in range(3)
+        ]
+        valid_roots = [r for r in roots if np.sign(r) == np.sign(gamma_avg)]
+        
+        def cubic_residual(x):
+            return abs(C * x**3 + 3.0 * v_avg * x - np.sqrt(2.0 * np.pi) * gamma_avg)
+            
+        # D = min(valid_roots, key=cubic_residual) if valid_roots else 0.0
+        D = min(valid_roots, key=abs) if valid_roots else 0.0
+
+    S = 2.0 * v_avg + (D**2) / np.pi
+    
+    # Extract bounds safely
+    val_inside_sqrt = max(0.0, 2.0 * S - D**2) 
+    sigma_plus = 0.5 * (np.sqrt(val_inside_sqrt) + D)
+    sigma_minus = 0.5 * (np.sqrt(val_inside_sqrt) - D)
+    
+    return sigma_plus, sigma_minus    
+    
 
 def compute_anisotropy_results(params_chi, slope_err_chi, Tani_chi,
                                params_psi, slope_err_psi, Tani_psi,
@@ -236,7 +483,7 @@ def compute_anisotropy_results(params_chi, slope_err_chi, Tani_chi,
     chi, psi, avg = compute_anisotropy(
         params_chi, slope_err_chi, Tani_chi,
         params_psi, slope_err_psi, Tani_psi,
-        Nz_calc, xangle, yangle, uncertainty_map
+        Nz_calc, xangle, yangle, uncertainty_map, np.linalg.norm(Bvec)
     )
 
     # package everything in one dict
@@ -251,10 +498,16 @@ def compute_anisotropy_results(params_chi, slope_err_chi, Tani_chi,
         T_ani_chi_delta_plus  = chi["uncertainty_delta_plus"],
         T_ani_chi_delta_minus = chi["uncertainty_delta_minus"],
 
+        T_chi_comps0           = chi["components"][0],
+        T_chi_comps1           = chi["components"][1],
+
         T_ani_psi             = psi["anisotropy"],
         T_ani_psi_uncert      = psi["uncertainty"],
         T_ani_psi_delta_plus  = psi["uncertainty_delta_plus"],
         T_ani_psi_delta_minus = psi["uncertainty_delta_minus"],
+
+        T_psi_comps0           = psi["components"][0],
+        T_psi_comps1           = psi["components"][1],
 
         slope_chi      = params_chi[0],
         slope_psi      = params_psi[0],
@@ -395,7 +648,6 @@ def calculate_support_means_groups(ds, groups):
         support_results.append(mean_ds)
 
     return xr.concat(support_results, dim="epoch", coords='minimal')
-
 
 def spc_calculate_anisotropy(ds, uncertainty_map, threshold = 0.5, NO_WEIGHTS=False):
     """
@@ -541,7 +793,9 @@ def spc_calculate_anisotropy(ds, uncertainty_map, threshold = 0.5, NO_WEIGHTS=Fa
 
         all_results.append(result_ds)
 
-        if i == 100: plots.rdf_fit_diagnostic_plot_individual(ds, vx[i], vy[i], vz_bx[i], vz_by[i], rdf[i], time[i], result_ds)
+        # if time[i] >= np.datetime64('2023-12-27T03:08:51'):
+        #     plots.rdf_fit_diagnostic_plot_individual(ds, vx[i], vy[i], vz_bx[i], vz_by[i], rdf[i], time[i], result_ds)
+        #     input()
     
     results = xr.concat(all_results, dim='time')
 
@@ -772,6 +1026,9 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
         )
         all_results.append(result_ds)
 
-        if count == 100: plots.rdf_fit_diagnostic_plot_for_groups(ds, block, block_time, result_ds)
+        # if count >= 1600:
+        #     print('In the loop')
+        #     plots.rdf_fit_diagnostic_plot_for_groups(ds, block, block_time, result_ds) 
+        #     input()
 
     return xr.concat(all_results, dim="time")

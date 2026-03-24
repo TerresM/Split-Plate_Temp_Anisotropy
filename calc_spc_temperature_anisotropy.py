@@ -27,7 +27,7 @@ import functions.data_preprocessing as preprocess
 import functions.load_routines as load
 
 from functions.spc_current_to_rdf import derive_reduced_vdf, kp_file_to_derived_reduced_vdf
-from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map
+from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map_newversion#gen_uncertainty_map2
 
 # TODO : Revisit this function to make sure the calculation is working correctly.
 from functions.spc_do_anisotropy_calc import perform_fitting_with_time_windows
@@ -181,7 +181,7 @@ def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', 
     for var in support_vars:
         spc_rdf[var] = spc_l3[var]
     # Add in current flags
-    
+
     return(spc_rdf)
 
 def get_pA_flags(init_ds):
@@ -210,8 +210,11 @@ def get_pA_flags(init_ds):
     flags_max = xr.concat([ds_stats['a_max_flag'], ds_stats['b_max_flag'], ds_stats['c_max_flag'], ds_stats['d_max_flag']], dim="flag")
     flags_med = xr.concat([ds_stats['a_med_flag'], ds_stats['b_med_flag'], ds_stats['c_med_flag'], ds_stats['d_med_flag']], dim="flag")
 
-    ds_stats['total_max_flag'] = (flags_max > 0).all(dim="flag").astype(int)
-    ds_stats['total_med_flag'] = (flags_med > 0).all(dim="flag").astype(int)
+    # ds_stats['total_max_flag'] = (flags_max > 0).all(dim="flag").astype(int)
+    # ds_stats['total_med_flag'] = (flags_med > 0).all(dim="flag").astype(int)
+
+    ds_stats['total_max_flag'] = flags_max.min(dim="flag").astype(int)
+    ds_stats['total_med_flag'] = flags_med.min(dim="flag").astype(int)
 
     return(ds_stats)
 
@@ -258,11 +261,13 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange = None):
         tend   = subrange[1]
         range_desc = f"Subrange ({tstart} to {tend})"
         is_subrange = True
+        slice_things = True
     else:
         tstart = f"{date_str}T00:00:00"
         tend   = f"{date_str}T23:59:59"
         range_desc = "Full Day"
         is_subrange = False
+        slice_things = False
     
     # Create full data timestamps
     # tstart = f"{date_str}T00:00:00"
@@ -285,6 +290,7 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange = None):
         data_vars = config_dict['data_vars']
         credentials = config_dict['credentials']
         uncert_map = config_dict['uncert_map']
+        gen_flag   = config_dict['gen_flag']
 
         OFFLINE = config_dict['OFFLINE']
         
@@ -294,15 +300,24 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange = None):
         # (This likely loads the full daily CDF anyway, matching your requirements)
         init_ds = initialize_fitting_data(trange, data_vars, smooth_seconds=smooth_seconds, mode=spc_mode, credentials=credentials, OFFLINE=OFFLINE)
 
+        if gen_flag:
+            flag = init_ds.general_flag.data
+            print(flag)
+            init_ds = init_ds.isel(epoch = np.where(flag == 0)[0])
+            print(f'There are now {len(init_ds.epoch.data)} points in init_ds')
+            print(f"Dropping data with general_flag != 0! (Total Dropped)/Total = {len(flag) - np.sum(flag == 0)}/{len(flag)}")
+
         # This ensures that if the loader returned a full day, we only process the subrange.
-        print(f"Slicing data to range: {tstart} -- {tend}")
-        init_ds = init_ds.sel(epoch=slice(tstart, tend))
+        if slice_things:
+            print(f"Slicing data to range: {tstart} -- {tend}")
+            init_ds = init_ds.sel(epoch=slice(tstart, tend))
+            
 
         # Check if data exists in the window
         if init_ds.epoch.size == 0:
             print(f"No data found in range {tstart} to {tend}. Skipping.")
             return
-
+        
         # Get pico-Amp flags
         pa_flag = get_pA_flags(init_ds).rename({'epoch':'time'})
         
@@ -397,7 +412,12 @@ if __name__ == "__main__":
 
     # 1. Configuration
     config = {
-        'fit_seconds':4,
+        # 'fit_seconds':1,
+        # 'fit_seconds':4,
+        # 'fit_seconds':8,
+        # 'fit_seconds':16,
+        # 'fit_seconds':32,
+        'fit_seconds':60,
         # 'fit_seconds': None,
         'smooth_seconds': None,
         'spc_mode': 'peak_track',
@@ -412,31 +432,34 @@ if __name__ == "__main__":
             'spi_sf00' : ['L3']
         },
         'credentials': load_config('config.json'),
-        'uncert_map': gen_uncertainty_map(4, 30),
-        'OFFLINE':False, 
+        'uncert_map': gen_uncertainty_map_newversion(4, 30), #gen_uncertainty_map2(4, 30),
+        'gen_flag': False,
+        'OFFLINE': True, 
     }
     
-    file_path = 'selected_dates.pkl'
+    file_path = 'selected_dates_updated.pkl'
 
     # Load the list (open file in 'rb' binary read mode)
     with open(file_path, 'rb') as f:
         loaded_dict = pickle.load(f)
 
     loaded_list = [date for date_list in loaded_dict.values() for date in date_list]
-
+    # dates_to_process = ['2022-02-24', '2022-05-31', '2022-09-04', '2022-12-09',
+    #                     '2023-03-16', '2023-06-20', '2023-09-26', '2023-12-27',
+    #                     '2024-03-28', '2024-06-27', '2024-09-27', '2024-12-22',
+    #                     '2025-03-17', '2025-03-18', '2025-03-19', '2025-03-20', 
+    #                     '2025-03-21']
     # dates_to_process = ['2024-06-23', '2024-06-24', '2024-06-25' , '2024-06-26', '2024-06-27']
-    dates_to_process = ['2023-12-27']
-    # dates_to_process = loaded_list
+    # dates_to_process = ['2023-12-27']
 
-    ds = process_anisotorpy_spc_event(dates_to_process[0], config, subrange=['2023-12-27T04:30:00', '2023-12-27T04:45:00'])
-    '''
     cutoff = datetime(2022,1,1) 
 
-    dates_to_process = [
-        d for d in loaded_list
-        if datetime.strptime(d, "%Y-%m-%d") > cutoff
-    ]
+    # dates_to_process = [
+    #     d for d in loaded_list
+    #     if datetime.strptime(d, "%Y-%m-%d") > cutoff
+    # ]
 
+    dates_to_process = ['2023-12-27']
 
     # 3. Iterate
     print(f"Queued {len(dates_to_process)} days for processing.")
@@ -445,4 +468,3 @@ if __name__ == "__main__":
         process_anisotorpy_spc_event(date_str, config)
 
     print('All events completed!')
-    '''
