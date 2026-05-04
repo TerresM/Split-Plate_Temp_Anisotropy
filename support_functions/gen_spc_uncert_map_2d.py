@@ -90,55 +90,6 @@ def gen_uncertainty_map2(angle_bin_width, anisotropy_bins):
     # Return the 
     return(theta_centers, ani_centers, d_plus, d_minus)
 
-def gen_uncertainty_map_newversion(angle_bin_width, anisotropy_bins):
-    map = cdflib.xarray.cdf_to_xarray('/home/michael/Research/PSP_Temp_Anisotropy/FMCMC_uncert_map_hires_updated_vx_noise.cdf')
-
-    ani = map.anisotropy.data
-    theta = map.theta.data
-
-    delta_plus = map.delta_plus.data.T
-    delta_minus = map.delta_minus.data.T
-
-    TH, AN = np.meshgrid(theta, ani, indexing='ij')
-
-    # now lets define a meshgrid to interpolate the values onto. 
-    angleMin = 0
-    angleMax = 90
-    angleBinWidth = angle_bin_width
-    angleBinNumber = int((angleMax - angleMin)/angleBinWidth)
-
-    anisotropyMin = 0.03
-    anisotropyMax = 15
-    anisotropyBinNumber = anisotropy_bins
-
-    anglelist = np.linspace(angleMin, angleMax, angleBinNumber + 1)
-    anisotropylist = np.logspace(np.log10(anisotropyMin), np.log10(anisotropyMax), anisotropyBinNumber + 1)
-  
-    # Select only the finite points.
-    maskPlus  = np.isfinite(delta_plus)  #(np.any(np.isnan(deltaPlus.data), axis=1))
-    maskMinus = np.isfinite(delta_minus) #(np.any(np.isnan(deltaMinus.data), axis=1))
-
-    # We want the maximum uncertainty in the bin to be the value.
-    d_plus, x_edges, y_edges, _ = binned_statistic_2d(
-        TH[maskPlus], AN[maskPlus], delta_plus[maskPlus], 
-        statistic='max', 
-        bins=[anglelist, anisotropylist]
-    )
-
-    d_minus, x_edges, y_edges, _ = binned_statistic_2d(
-        TH[maskMinus], AN[maskMinus], delta_minus[maskMinus], 
-        statistic='max', 
-        bins=[anglelist, anisotropylist]
-    )
-
-    # Calculate Bin Centers for the Fit
-    theta_centers = (x_edges[:-1] + x_edges[1:]) / 2
-    ani_centers_log = (np.log10(y_edges[:-1]) + np.log10(y_edges[1:])) / 2
-    ani_centers = 10**ani_centers_log
-
-
-    return(theta_centers, ani_centers, d_plus, d_minus)
-
 def analytical_uncertainty_model(X, sigma_base, T_limit, exponent):
     """
     Parametric model for SPC Uncertainty.
@@ -200,6 +151,79 @@ def gen_uncertainty_map3(angle_bin_width, anisotropy_bins):
     d_plus, d_minus = delta_plus_minus_value(X)
 
     return(anglelist, anisotropylist, d_plus, d_minus)
+
+def gen_uncertainty_map_newversion(angle_bin_width, anisotropy_bins):
+    map = cdflib.xarray.cdf_to_xarray('./FMCMC_uncert_map_hires_updated_vx_noise.cdf')
+
+    ani = map.anisotropy.data
+    theta = map.theta.data
+
+    delta_plus = map.delta_plus.data.T
+    delta_minus = map.delta_minus.data.T
+
+    TH, AN = np.meshgrid(theta, ani, indexing='ij')
+
+    # now lets define a meshgrid to interpolate the values onto. 
+    angleMin = 0
+    angleMax = 90
+    angleBinWidth = angle_bin_width
+    angleBinNumber = int((angleMax - angleMin)/angleBinWidth)
+
+    anisotropyMin = 0.03
+    anisotropyMax = 15
+    anisotropyBinNumber = anisotropy_bins
+
+    anglelist = np.linspace(angleMin, angleMax, angleBinNumber + 1)
+    anisotropylist = np.logspace(np.log10(anisotropyMin), np.log10(anisotropyMax), anisotropyBinNumber + 1)
+  
+    # Select only the finite points.
+    maskPlus  = np.isfinite(delta_plus)  #(np.any(np.isnan(deltaPlus.data), axis=1))
+    maskMinus = np.isfinite(delta_minus) #(np.any(np.isnan(deltaMinus.data), axis=1))
+
+    # We want the maximum uncertainty in the bin to be the value.
+    d_plus, x_edges, y_edges, _ = binned_statistic_2d(
+        TH[maskPlus], AN[maskPlus], delta_plus[maskPlus], 
+        statistic='max', 
+        bins=[anglelist, anisotropylist]
+    )
+
+    d_minus, x_edges, y_edges, _ = binned_statistic_2d(
+        TH[maskMinus], AN[maskMinus], delta_minus[maskMinus], 
+        statistic='max', 
+        bins=[anglelist, anisotropylist]
+    )
+
+    # Calculate Bin Centers for the Fit
+    theta_centers = (x_edges[:-1] + x_edges[1:]) / 2
+    ani_centers_log = (np.log10(y_edges[:-1]) + np.log10(y_edges[1:])) / 2
+    ani_centers = 10**ani_centers_log
+
+
+    return(theta_centers, ani_centers, d_plus, d_minus)
+
+def gen_uncertainty_map_final():
+    map = cdflib.xarray.cdf_to_xarray('./FMCMC_uncert_map_final_with_count.cdf')
+    map = map.where(map != -1e31, np.nan)
+
+    ani = map.anisotropy.data
+    theta = map.theta.data
+
+    delta_plus = map.delta_plus.data
+    delta_minus = map.delta_minus.data
+    count = map['count'].data
+
+    percent = 100*count/np.nanmax(count)
+    mask = percent < 90 
+
+    delta_plus[mask] = np.nan
+    delta_minus[mask] = np.nan
+
+    # Now we are going to fill all NaN values. NOTE: This could be simpler but it works!
+    unrealisitic_bound = 1e4
+    delta_plus = np.nan_to_num(delta_plus, nan=unrealisitic_bound)
+    delta_minus = np.nan_to_num(delta_minus, nan=unrealisitic_bound)
+
+    return (theta, ani, delta_plus, delta_minus)
 
 
 

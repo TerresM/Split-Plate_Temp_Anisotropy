@@ -104,7 +104,8 @@ def derive_reduced_vdf(spc_ds, DATASET=True):
     vel_mid = np.sqrt(2 * c.e.si * ds.mv_hi.data * (u.Volt) / c.m_p).to(u.km/u.s) * (2.0/np.pi) * _E(ds.mv_lo.data, ds.mv_hi.data)
 
     # Calculate the differential velocity
-    dv = np.sqrt((4 * (c.e.si)/(c.m_p) * (center_voltage) * (u.Volt)).to(u.km**2/u.s**2) - vel_mid**2)
+    # There is a typo in Case et al. (2020), and the factor of 2 needs to be accounted for. 
+    dv = np.sqrt((2 * (c.e.si)/(c.m_p) * (center_voltage) * (u.Volt)).to(u.km**2/u.s**2) - vel_mid**2)
 
     # Reduced rdf value, this is not quite accurate as it does not take into account the geometric factor. 
     # However, the geometric factor is removed once the re-normalization in the fitting is acheived. 

@@ -84,6 +84,10 @@ def calculate_parallel_beta_and_anisotropy(ds, DTYPE='fit'):
         print('Loading in fit data!')
         n_p = ds['np_fit'].data       # cm^-3
         w_p = ds['wp_fit'].data       # km/s (Thermal Speed)
+    elif DTYPE.lower() == 'corefit' and 'np1_fit' in ds:
+        print('Loading in core fit data!')
+        n_p = ds['np1_fit'].data       # cm^-3
+        w_p = ds['wp1_fit'].data       # km/s (Thermal Speed)
     elif DTYPE.lower() == 'moment' and 'np_moment' in ds:
         print('Loading in moment data!')
         n_p = ds['np_moment'].data
@@ -216,6 +220,11 @@ def load_and_aggregate(file_list, max_uncertainty=0.5, PRODUCT='fit'):
             uncertainty = 100*ds['T_ani_avg_uncert'].data/ds['T_ani_avg'].data
 
             T_para_uncert = (((1 - ds['Nz']**2) * ds['T_ani_avg_uncert'])/((ds['Nz']**2) + ds['T_ani_avg'] * (1 - ds['Nz']**2)))**2
+        elif 'T_ani_avg_delta_plus' in ds and 'T_ani_avg_delta_minus' in ds:
+            print("Here using the proper temperature anisotorpy")
+            dp = ds['T_ani_avg_delta_plus'].data
+            dm = ds['T_ani_avg_delta_minus'].data
+            uncertainty = 100 * (dp + dm)/ds['T_ani_avg'].data
         else:
             # If no uncertainty var exists, assume 0 (or skip filtering)
             uncertainty = np.zeros_like(anisotropy) 
@@ -235,8 +244,8 @@ def load_and_aggregate(file_list, max_uncertainty=0.5, PRODUCT='fit'):
             np.isfinite(anisotropy) & 
             np.isfinite(uncertainty) &
             (beta_par > 1e-4) & (beta_par < 1e3) &
-            (anisotropy > 1e-2) & (anisotropy < 1e2) & (data_max > 0) #&
-            # (uncertainty < max_uncertainty)  # <--- NEW# FILTER
+            (anisotropy > 1e-2) & (anisotropy < 1e2) & (data_max > 0) &
+            (uncertainty < max_uncertainty)  # <--- NEW# FILTER
         )
         
         if np.any(valid_mask):
@@ -381,7 +390,7 @@ def make_brazil_plot(beta_vals, ani_vals, NORMALIZE=False, SAVEFILE=None):
         cmap.set_under("#FFFFFF")
         # Create 2D Histogram
         h = ax.hist2d(beta_vals, ani_vals, bins=[beta_bins, ani_bins], 
-                        norm=LogNorm(vmin=5), cmap=cmap)
+                        norm=LogNorm(vmin=10), cmap=cmap)
         
         Z_peak_norm = h[0]/np.max(h[0])
         
@@ -493,6 +502,7 @@ if __name__ == "__main__":
     # data_dir = './anisotropy_files/threshold_50_all_events/' 
     # data_dir = './anisotropy_files/threshold_35_all_events/' 
     # data_dir = './anisotropy_files/analytic_uncert_map/'
+    # data_dir = './anisotropy_files/stat_fit/'
     data_dir = './anisotropy_files/'
     # data_dir = './anisotropy_files/failed_gamma_avg'
     # data_dir = './anisotropy_files/4_sec_all_encounters/'
@@ -504,9 +514,10 @@ if __name__ == "__main__":
         exit()
 
     # 2. Aggregate Data
-    beta_vals, ani_vals, uncert_vals, Tpara_uncert, chi_vals, psi_vals = load_and_aggregate(files, max_uncertainty=10, PRODUCT='moment')
+    beta_vals, ani_vals, uncert_vals, Tpara_uncert, chi_vals, psi_vals = load_and_aggregate(files, max_uncertainty=10, PRODUCT='corefit')
     beta_vals_mom, ani_vals_mom, uncert_vals_mom, Tpara_uncert_mom, chi_vals_mom, psi_vals_mom = load_and_aggregate(files, max_uncertainty=10, PRODUCT='moment')
 
     print(f"Total Data Points Loaded: {len(beta_vals)}")
 
     make_brazil_plot(beta_vals, ani_vals)
+    make_brazil_plot(beta_vals_mom, ani_vals_mom)

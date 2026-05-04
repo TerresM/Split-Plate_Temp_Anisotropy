@@ -27,7 +27,7 @@ import functions.data_preprocessing as preprocess
 import functions.load_routines as load
 
 from functions.spc_current_to_rdf import derive_reduced_vdf, kp_file_to_derived_reduced_vdf
-from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map_newversion#gen_uncertainty_map2
+from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map_final # gen_uncertainty_map_newversion    # gen_uncertainty_map2
 
 # TODO : Revisit this function to make sure the calculation is working correctly.
 from functions.spc_do_anisotropy_calc import perform_fitting_with_time_windows
@@ -39,10 +39,12 @@ from functions.smooth_spc_data import smooth_spc_resample
 from functions.spc_calc_anisotropy_v3 import spc_calculate_anisotropy, spc_calculate_anisotropy_groups
 from functions.spc_calc_anisotropy_v3 import calculate_support_means_groups, get_support_values
 
+from functions import spc_processing_pipeline as spc_proc
+
 from scipy.optimize import curve_fit
 
 plt.ion()
-
+"""
 def spc_select_key_values(spc_l2):
     spc = xr.Dataset(
         data_vars=dict(
@@ -171,12 +173,21 @@ def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', 
     # hampel filter the fields data
     fields.data = hampel_filter2(fields.data, 5)[0]
 
+    # fields = fields.resample(epoch='250ms').mean()
+    # fields = fields.rolling(epoch=240, center=True, min_periods=1).mean()
+    # print('rolling field')
+
     # Interpolate the fields data onto the same time resolution.
     flds_inter  = fields.interp(epoch=spc_rdf.epoch)
     spc_rdf['b_vec'] = flds_inter
 
     # Let us attach the l3 supporting data for density, velocity, and temperature.
-    support_vars = ['np_fit', 'wp_fit', 'vp_fit_SC', 'np_moment', 'wp_moment', 'vp_moment_SC', 'general_flag']
+    support_vars = ['np_fit', 'wp_fit', 'vp_fit_SC',
+                    'np1_fit', 'wp1_fit', 'vp1_fit_SC',
+                    'n3_fit', 'w3_fit', 'v3_fit_SC',
+                    'na_fit', 'wa_fit', 'va_fit_SC',
+                    'np_moment', 'wp_moment', 'vp_moment_SC',
+                    'general_flag']
 
     for var in support_vars:
         spc_rdf[var] = spc_l3[var]
@@ -312,7 +323,6 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange = None):
             print(f"Slicing data to range: {tstart} -- {tend}")
             init_ds = init_ds.sel(epoch=slice(tstart, tend))
             
-
         # Check if data exists in the window
         if init_ds.epoch.size == 0:
             print(f"No data found in range {tstart} to {tend}. Skipping.")
@@ -386,7 +396,7 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange = None):
         if avg_bfield:
             filename = f"{output_dir}/SPC_Anisotropy_{date_str}_{spc_mode}_bavg_{tag_str}"
         else:
-            filename = f"{output_dir}/SPC_Anisotropy_{date_str}_{spc_mode}{tag_str}"
+            filename = f"{output_dir}/SPC_Anisotropy_{date_str}_{spc_mode}{tag_str}_NEW_3PFIT_Bayesian_clean"
 
         # 5. Save
         print(f"Saving to {filename}...")
@@ -405,7 +415,7 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange = None):
         
         # Force garbage collection
         gc.collect()
-
+"""
 if __name__ == "__main__":
     pyspedas.psp.config.local_data_dir = 'psp_data'
     pyspedas.psp.config.CONFIG['sweap_remote_data_dir'] = 'http://131.142.18.203/data/sci/'
@@ -413,11 +423,11 @@ if __name__ == "__main__":
     # 1. Configuration
     config = {
         # 'fit_seconds':1,
-        # 'fit_seconds':4,
+        'fit_seconds':4,
         # 'fit_seconds':8,
         # 'fit_seconds':16,
         # 'fit_seconds':32,
-        'fit_seconds':60,
+        # 'fit_seconds':60,
         # 'fit_seconds': None,
         'smooth_seconds': None,
         'spc_mode': 'peak_track',
@@ -426,13 +436,14 @@ if __name__ == "__main__":
         'win_max': False,
         'min_flux': 0.5,
         'avg_bfield': False,
+        # 'avg_bfield':True,
         'data_vars': {
             'spc' : ['l2i', 'l3i'],
             'fields' : 'mag_SC_4_Sa_per_Cyc',
             'spi_sf00' : ['L3']
         },
         'credentials': load_config('config.json'),
-        'uncert_map': gen_uncertainty_map_newversion(4, 30), #gen_uncertainty_map2(4, 30),
+        'uncert_map': gen_uncertainty_map_final(), #gen_uncertainty_map_newversion(4, 30), #gen_uncertainty_map2(4, 30),
         'gen_flag': False,
         'OFFLINE': True, 
     }
@@ -443,28 +454,33 @@ if __name__ == "__main__":
     with open(file_path, 'rb') as f:
         loaded_dict = pickle.load(f)
 
-    loaded_list = [date for date_list in loaded_dict.values() for date in date_list]
+    # loaded_list = [date for date_list in loaded_dict.values() for date in date_list]
     # dates_to_process = ['2022-02-24', '2022-05-31', '2022-09-04', '2022-12-09',
     #                     '2023-03-16', '2023-06-20', '2023-09-26', '2023-12-27',
     #                     '2024-03-28', '2024-06-27', '2024-09-27', '2024-12-22',
     #                     '2025-03-17', '2025-03-18', '2025-03-19', '2025-03-20', 
     #                     '2025-03-21']
     # dates_to_process = ['2024-06-23', '2024-06-24', '2024-06-25' , '2024-06-26', '2024-06-27']
-    # dates_to_process = ['2023-12-27']
+    dates_to_process = ['2023-12-27']
 
-    cutoff = datetime(2022,1,1) 
+    # cutoff = datetime(2023,9,21) 
+    # cutoff = datetime(2022,9,1)
+    # cutoff = datetime(2024,3,28)
 
     # dates_to_process = [
     #     d for d in loaded_list
     #     if datetime.strptime(d, "%Y-%m-%d") > cutoff
     # ]
 
-    dates_to_process = ['2023-12-27']
+    # dates_to_process = ['2023-12-27']
+    # dates_to_process = ['2023-09-26']
+    # dates_to_process = ['2023-09-21', '2023-09-22', '2023-09-23', '2023-09-24', '2023-09-25', '2023-09-26']
+    # dates_to_process = ['2022-02-21']
 
     # 3. Iterate
     print(f"Queued {len(dates_to_process)} days for processing.")
     
     for date_str in tqdm(dates_to_process):
-        process_anisotorpy_spc_event(date_str, config)
+        spc_proc.process_anisotorpy_spc_event(date_str, config)
 
     print('All events completed!')

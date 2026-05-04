@@ -3,6 +3,7 @@ pydata/
 psp_data/
 spice_data/
 v00/
+v1.3/
 *.cdf
 *.ipynb
 *.png

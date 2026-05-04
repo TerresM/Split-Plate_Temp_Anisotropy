@@ -385,7 +385,7 @@ if __name__ == "__main__":
     delta_plus = np.full((NANI, NTH), np.nan)
     delta_minus = np.full((NANI, NTH), np.nan)
     # NRUNS = 6000
-    NRUNS = 600
+    NRUNS = 6000
 
     # 1. Sample the plasma states ONCE for the entire grid
     print("Sampling base plasma states...")
@@ -427,8 +427,10 @@ if __name__ == "__main__":
 
     dp_xr = xr.DataArray(delta_plus, coords = {'anisotropy':ani_vals, 'theta':theta_vals})
     dm_xr = xr.DataArray(delta_minus, coords = {'anisotropy':ani_vals, 'theta':theta_vals})
+    dc_xr = xr.DataArray(count, coords = {'anisotropy':ani_vals, 'theta':theta_vals})
 
-    xr_ds = xr.Dataset({'delta_plus':dp_xr, 'delta_minus':dm_xr})
+    xr_ds = xr.Dataset({'delta_plus':dp_xr, 'delta_minus':dm_xr, 'count':dc_xr})
+    xr_ds['NRUNS'] = NRUNS
 
     A, T = np.meshgrid(ani_vals, theta_vals, indexing='ij')
 
