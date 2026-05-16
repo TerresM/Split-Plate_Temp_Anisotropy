@@ -202,7 +202,7 @@ def gen_uncertainty_map_newversion(angle_bin_width, anisotropy_bins):
     return(theta_centers, ani_centers, d_plus, d_minus)
 
 def gen_uncertainty_map_final():
-    map = cdflib.xarray.cdf_to_xarray('./FMCMC_uncert_map_final_with_count.cdf')
+    map = cdflib.xarray.cdf_to_xarray('./FMCMC_uncert_map_final_with_count_v7.cdf')
     map = map.where(map != -1e31, np.nan)
 
     ani = map.anisotropy.data
@@ -224,6 +224,34 @@ def gen_uncertainty_map_final():
     delta_minus = np.nan_to_num(delta_minus, nan=unrealisitic_bound)
 
     return (theta, ani, delta_plus, delta_minus)
+
+def gen_uncertainty_map_with_bias():
+    map = cdflib.xarray.cdf_to_xarray('./FMCMC_uncert_map_final_with_logvalues_count_and_bias.cdf')
+    map = map.where(map != -1e31, np.nan)
+
+    ani = map.anisotropy.data
+    theta = map.theta.data
+
+    delta_plus = map.delta_plus.data
+    delta_minus = map.delta_minus.data
+    bias = map.bias.data
+    count = map['count'].data
+
+    percent = 100*count/np.nanmax(count)
+    mask = percent < 90 
+
+    delta_plus[mask] = np.nan
+    delta_minus[mask] = np.nan
+    bias[mask] = np.nan
+
+    # # Now we are going to fill all NaN values. NOTE: This could be simpler but it works!
+    # unrealisitic_bound = 1e4
+    # delta_plus = np.nan_to_num(delta_plus, nan=unrealisitic_bound)
+    # delta_minus = np.nan_to_num(delta_minus, nan=unrealisitic_bound)
+    # bias        = np.nan_to_num(bias, nan=unrealisitic_bound)
+
+    return (theta, ani, delta_plus, delta_minus, bias)
+
 
 
 

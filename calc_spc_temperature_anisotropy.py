@@ -27,7 +27,7 @@ import functions.data_preprocessing as preprocess
 import functions.load_routines as load
 
 from functions.spc_current_to_rdf import derive_reduced_vdf, kp_file_to_derived_reduced_vdf
-from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map_final # gen_uncertainty_map_newversion    # gen_uncertainty_map2
+from support_functions.gen_spc_uncert_map_2d import gen_uncertainty_map_with_bias, gen_uncertainty_map_final # gen_uncertainty_map_newversion    # gen_uncertainty_map2
 
 # TODO : Revisit this function to make sure the calculation is working correctly.
 from functions.spc_do_anisotropy_calc import perform_fitting_with_time_windows
@@ -418,7 +418,7 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange = None):
 """
 if __name__ == "__main__":
     pyspedas.psp.config.local_data_dir = 'psp_data'
-    pyspedas.psp.config.CONFIG['sweap_remote_data_dir'] = 'http://131.142.18.203/data/sci/'
+    pyspedas.psp.config.CONFIG['sweap_remote_data_dir'] = 'https://w3sweap.cfa.harvard.edu/data/sci/'#'http://131.142.18.203/data/sci/'
 
     # 1. Configuration
     config = {
@@ -442,10 +442,10 @@ if __name__ == "__main__":
             'fields' : 'mag_SC_4_Sa_per_Cyc',
             'spi_sf00' : ['L3']
         },
-        'credentials': load_config('config.json'),
-        'uncert_map': gen_uncertainty_map_final(), #gen_uncertainty_map_newversion(4, 30), #gen_uncertainty_map2(4, 30),
+        'credentials': None, #load_config('config.json'),
+        'uncert_map': gen_uncertainty_map_with_bias(), # gen_uncertainty_map_final(), #gen_uncertainty_map_newversion(4, 30), #gen_uncertainty_map2(4, 30),
         'gen_flag': False,
-        'OFFLINE': True, 
+        'OFFLINE': False, 
     }
     
     file_path = 'selected_dates_updated.pkl'

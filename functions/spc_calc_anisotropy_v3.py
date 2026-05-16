@@ -145,7 +145,13 @@ def bayesian_anisotropy_grid_solver(vz_fit, vtrans_fit, weights, bz, sigma_vz, u
     # ====================================================================
     # 2. CONVOLUTION (Smear the statistics with the Systematic map)
     # ====================================================================
-    angle_list, ani_list, delta_plus_map, delta_minus_map = uncert_map
+    try:
+        angle_list, ani_list, delta_plus_map, delta_minus_map, bias_map = uncert_map
+    except ValueError:
+        angle_list, ani_list, delta_plus_map, delta_minus_map = uncert_map
+        bias_map = np.zeros_like(delta_plus_map)
+        print("Warning: Old uncertainty map detected. Defaulting to zero systematic bias.")
+        
     idx_angle = np.nanargmin(np.abs(np.abs(flow_angle) - angle_list))
     
     dp_grid = np.interp(alphas, ani_list, delta_plus_map[idx_angle, :])
@@ -597,7 +603,16 @@ def _get_uncertainty(fit_vals, slope_error, Nz, field_error, flow_angle, calc_an
         magnitude of the upper and lower delta
     '''
     # First load in the uncertainty maps
-    angle_list, ani_list, anisotropy_delta_plus, anisotropy_delta_minus = uncertainty_map
+    try:
+        # Try unpacking the new 5-element map
+        angle_list, ani_list, anisotropy_delta_plus, anisotropy_delta_minus, bias_map = uncertainty_map
+    except ValueError:
+        # Fall back to the old 4-element map
+        angle_list, ani_list, anisotropy_delta_plus, anisotropy_delta_minus = uncertainty_map
+        
+        # Create a dummy bias map filled with zeros so downstream math doesn't break
+        bias_map = np.zeros_like(anisotropy_delta_plus)
+        print("Warning: Old uncertainty map detected. Defaulting to zero systematic bias.")
 
     if np.isnan(flow_angle):
         mapped_angle_index = -1    # Is this correct? Perhaps I just set the uncertainty to NaN?
@@ -611,6 +626,7 @@ def _get_uncertainty(fit_vals, slope_error, Nz, field_error, flow_angle, calc_an
 
     delta_plus  = anisotropy_delta_plus[mapped_angle_index, mapped_anisotropy_index]
     delta_minus = anisotropy_delta_minus[mapped_angle_index, mapped_anisotropy_index]
+    bias        = bias_map[mapped_angle_index, mapped_anisotropy_index]
 
     # Now get the standard deviation
     part_tani_part_slope = -Nz / ((1 - Nz**2) * fit_vals[0] + Nz)**2
@@ -622,7 +638,7 @@ def _get_uncertainty(fit_vals, slope_error, Nz, field_error, flow_angle, calc_an
 
     components = [(part_tani_part_slope * slope_error)**2, (part_tani_part_Nz_chi * field_error)**2]
 
-    return(delta_plus, delta_minus, std, delta_mag, components)
+    return(delta_plus, delta_minus, bias, std, delta_mag, components)
 
 def _get_uncertainty2(fit_vals, slope_error, Nz, field_error, flow_angle, calc_anisotropy, uncertainty_map):
     '''
@@ -1441,7 +1457,7 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
     if groups is None:
         groups = [(t, t) for t in time.values]
     count = 0
-    for (t0, t1) in groups: #tqdm(groups):
+    for (t0, t1) in tqdm(groups):
         count += 1
         block = base.sel(time=slice(t0, t1))
 
@@ -1633,7 +1649,7 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
                 joint_post = np.full_like(grid_chi, np.nan)
 
             # --- DIAGNOSTIC PLOTTING ---
-            PLOT_POSTERIORS = True  # Toggle this to False when running the full 60 days!
+            PLOT_POSTERIORS = False  # Toggle this to False when running the full 60 days!
             
             # Optional: Only plot every 100th point to save time, or specific times
             if PLOT_POSTERIORS and (count % 100 == 0): 
@@ -1687,7 +1703,7 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
             continue
 
         elif METHOD == "Bayesian_MCMC":
-            sig_I = 1.8
+            sig_I = 1.0
             lamda = 1.009
             C     = lamda/2.
 
@@ -1810,7 +1826,7 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
 
             # if (count % 100 == 0): 
                 # print("This is the value I am looking at", var_x_array, var_y_array)
-            PLOT_POSTERIORS = True
+            PLOT_POSTERIORS = False
 
             if PLOT_POSTERIORS and (count % 50 == 0): 
                 import os

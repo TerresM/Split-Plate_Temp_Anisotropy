@@ -3,6 +3,7 @@ import xarray as xr
 import cdflib.xarray
 import matplotlib.pyplot as plt
 import multiprocessing as mp
+from scipy.ndimage import label
 
 from tqdm import tqdm
 
@@ -250,16 +251,70 @@ def build_1d_vdf_model_vectoriezed(f_1ds, vz_array):
     conversion_factor = A_eff * q_e * np.abs(vz_array) * dvz_array * C_cal
 
     I_ideal = f_1ds * conversion_factor  # This is a proxy for the current.
+    I_ideal = np.clip(I_ideal, 1.0, None)
 
-    I_noise_bg = np.random.normal(0, 1, size=I_ideal.shape)
+    I_noise_bg = np.random.normal(0, 1, size=I_ideal.shape) * 0.25    # Change this to be 1 pA model discussed with KP
 
-    I_model = I_ideal + I_noise_bg + 1.0
+    I_model = I_ideal + I_noise_bg
 
     # Define the reduced vdf model
     f_1ds_models = I_model/conversion_factor
-    f_1ds_models = np.clip(f_1ds_models, 0, None)
+    # f_1ds_models = np.clip(f_1ds_models, 0.25, None)
 
     return f_1ds_models, I_ideal
+
+def get_contiguous_peak_mask(weights, threshold):
+    """
+    Takes a 2D array of VDF weights (time, velocity) and returns a boolean mask
+    keeping only the contiguous points around the peak of each row.
+    """
+    # 1. Create the raw threshold mask
+    raw_mask = np.isfinite(weights) & (weights > threshold)
+    
+    # 2. The Magic Matrix: 
+    # This 3x3 array tells scipy to only group pixels horizontally (velocity bins)
+    # and NEVER group pixels vertically (adjacent time steps).
+    structure = np.array([[0, 0, 0],
+                          [1, 1, 1],
+                          [0, 0, 0]])
+    
+    # Label the islands
+    labeled_array, _ = label(raw_mask, structure=structure)
+    
+    # 3. Find the exact index of the peak for each row
+    peak_indices = np.zeros(weights.shape[0], dtype=int)
+    valid_rows = np.any(np.isfinite(weights), axis=1) # Protect against all-NaN rows
+    peak_indices[valid_rows] = np.nanargmax(weights[valid_rows], axis=1)
+    
+    # 4. Extract the island label that belongs to the peak
+    row_indices = np.arange(weights.shape[0])
+    peak_labels = labeled_array[row_indices, peak_indices]
+    
+    # 5. Build the clean mask: match the peak's label and ignore 0 (background)
+    clean_mask = raw_mask & (labeled_array == peak_labels[:, None]) & (labeled_array > 0)
+    
+    return clean_mask
+
+def calc_analytical_vx_noise(I_ideal, vx_ideal, vz_array, K):
+    """
+    Calculates the standard deviation of vx based strictly on 
+    the SWEAP SPC hardware specifications and exact error propagation.
+    """
+    # 1. Clamp the current at the 1.0 pA hardware noise floor
+    I_safe = np.maximum(I_ideal, 1.0)
+    
+    # 2. Find the true physical angle (in radians)
+    theta_ideal = np.arctan2(vx_ideal, np.abs(vz_array))
+    
+    # 3. Calculate the angular hardware noise (sigma_theta)
+    geom_penalty = np.sqrt(1.0 + (theta_ideal / K)**2)
+    sigma_theta = (K / I_safe) * geom_penalty
+    
+    # 4. Propagate sigma_theta to sigma_vx using the sec^2(theta) derivative
+    sec2_theta = 1.0 / (np.cos(theta_ideal)**2)
+    sigma_vx = np.abs(vz_array) * sec2_theta * sigma_theta
+    
+    return sigma_vx
 
 def process_grid_point(args):
     """
@@ -280,18 +335,7 @@ def process_grid_point(args):
     m_ideal  = ((1 - alpha) * np.cos(theta_b)) / (np.cos(theta_b)**2 + alpha * np.sin(theta_b)**2)
     vx_ideal = m_ideal * vz_array * np.sin(theta_b)
     
-    # sigma_vx = 5.0 * (1.0 / np.sqrt(I_ideal + 0.01))
-    # sigma_vx = 100.0 * (1.0 / (I_ideal + 0.01))
-    # vx_noise = np.random.normal(0, 1, size=I_ideal.shape) * sigma_vx
-    # vx_model = vx_ideal + vx_noise
-    I_norm = I_ideal / (np.max(I_ideal) + 1e-12)
-
-    # popt = [ -4.08906605,  35.15915399, -32.52587594]
-    popt = [-0.00118529,  0.01581001, -0.01449879]
-    sigma_theta_deg = (popt[0]/(I_norm)) + (popt[1]/np.sqrt(I_norm)) + popt[2]
-    sigma_theta_rad = np.radians(sigma_theta_deg)
-
-    sigma_vx = vz_array * sigma_theta_rad
+    sigma_vx = calc_analytical_vx_noise(I_ideal, vx_ideal, vz_array, 1.009/2.0) 
     vx_noise = np.random.normal(0, 1, size=I_ideal.shape) * sigma_vx
 
     vx_model = vx_ideal + vx_noise
@@ -302,7 +346,8 @@ def process_grid_point(args):
     # Add a tiny epsilon (1e-12) to prevent divide-by-zero warnings if a VDF is totally wiped out
     max_f1ds = np.max(f_1ds_models, axis=1)[:, None] + 1e-12 
     weights = f_1ds_models / max_f1ds
-    mask = weights > 0.5
+    # mask = weights > 0.5
+    mask = get_contiguous_peak_mask(weights, 0.5)
 
     # 5. Fast Vectorized Least Squares
     X = xdata[None, :]
@@ -336,26 +381,33 @@ def process_grid_point(args):
     res = alphas[np.isfinite(alphas) & (alphas > 0)]
     
     # 7. Calculate Percentiles
-    d_plus, d_minus = np.nan, np.nan
+    d_plus, d_minus, bias = np.nan, np.nan, np.nan
     count = len(res)
-    if len(res) >= 0.5 * NRUNS:
-        d_plus  = np.percentile(res, 84) - alpha
-        d_minus = alpha - np.percentile(res, 16)
-        # d_plus = np.max(res) - alpha
-        # d_minus = alpha - np.min(res)
-        
-    return (i, j, d_plus, d_minus, count)
+    if len(res) >= 2.0:
+        log_res = np.log10(res)
+        log_alpha = np.log10(alpha)
+
+        log_med = np.percentile(log_res, 50)
+        log_sig_plus  = np.percentile(log_res, 84) - log_med
+        log_sig_minus = log_med - np.percentile(log_res, 16)
+
+        d_plus  = log_sig_plus
+        d_minus = log_sig_minus
+        bias    = log_med - log_alpha
+      
+    return (i, j, d_plus, d_minus, bias, count)
 
 if __name__ == "__main__":
     # Load in the samples, let us start with the moments.
-    samples = cdflib.xarray.cdf_to_xarray('spc_all_valid_moms.cdf')
+    samples = cdflib.xarray.cdf_to_xarray('spc_all_valid_core_fits.cdf')
 
-    sample_mask = (samples.np_moment.data > 10) & (samples.wp_moment.data > 20) & (samples.np_moment.data < 2000)
+    # sample_mask = (samples.np_moment.data > 10) & (samples.wp_moment.data > 20) & (samples.np_moment.data < 1000)
+    sample_mask = (samples.np1_fit.data > 10) & (samples.wp1_fit.data > 20) & (samples.np1_fit.data < 1000)
 
     samples = samples.isel(Epoch=sample_mask)
 
     # High resolution grid, this is to be comparable to peak tracks
-    speed_bins = np.logspace(np.log10(138), np.log10(875), num=128) # Assume 60 energy windows
+    speed_bins = np.logspace(np.log10(138), np.log10(875), num=50) # Assume 60 energy windows
     vz_array = -np.sort(speed_bins)
 
     vx_limit = np.max(np.abs(vz_array)) * np.tan(np.radians(30))
@@ -384,16 +436,22 @@ if __name__ == "__main__":
 
     delta_plus = np.full((NANI, NTH), np.nan)
     delta_minus = np.full((NANI, NTH), np.nan)
-    # NRUNS = 6000
+    # NRUNS = 600
     NRUNS = 6000
 
     # 1. Sample the plasma states ONCE for the entire grid
     print("Sampling base plasma states...")
     idxs = np.random.randint(0, len(samples.Epoch.data), size=(NRUNS))
-    n_arr = samples.np_moment.values[idxs]
-    ux_arr = samples.vp_moment_SC.values[idxs,0]
-    uz_arr = samples.vp_moment_SC.values[idxs,2]
-    wp_arr = samples.wp_moment.values[idxs]
+    # n_arr = samples.np_moment.values[idxs]
+    # ux_arr = samples.vp_moment_SC.values[idxs,0]
+    # uz_arr = samples.vp_moment_SC.values[idxs,2]
+    # wp_arr = samples.wp_moment.values[idxs]
+    
+    n_arr = samples.np1_fit.values[idxs]
+    ux_arr = samples.vp1_fit_SC.values[idxs,0]
+    uz_arr = samples.vp1_fit_SC.values[idxs,2]
+    wp_arr = samples.wp1_fit.values[idxs]
+
 
     # 2. Build the Task List
     print("Building task list...")
@@ -412,15 +470,17 @@ if __name__ == "__main__":
     print(f"Firing up multiprocessing pool with {num_cores} cores...")
     
     count = np.zeros(delta_minus.shape)
+    biases  = np.zeros(delta_minus.shape)
     # Pool automatically handles chunking and load balancing
     with mp.Pool(processes=num_cores) as pool:
         # imap_unordered yields results as soon as any core finishes a point
         for result in tqdm(pool.imap_unordered(process_grid_point, tasks), total=len(tasks)):
-            i, j, d_plus, d_minus, counts = result
+            i, j, d_plus, d_minus, bias, counts = result
             
             # Store the computed bounds into your matrices
             delta_plus[i, j] = d_plus
             delta_minus[i, j] = d_minus
+            biases[i,j]   = bias
             count[i, j] = counts
             
     print("Grid evaluation complete! Ready to plot.")
@@ -428,8 +488,9 @@ if __name__ == "__main__":
     dp_xr = xr.DataArray(delta_plus, coords = {'anisotropy':ani_vals, 'theta':theta_vals})
     dm_xr = xr.DataArray(delta_minus, coords = {'anisotropy':ani_vals, 'theta':theta_vals})
     dc_xr = xr.DataArray(count, coords = {'anisotropy':ani_vals, 'theta':theta_vals})
+    db_xr = xr.DataArray(biases, coords = {'anisotropy':ani_vals, 'theta':theta_vals})
 
-    xr_ds = xr.Dataset({'delta_plus':dp_xr, 'delta_minus':dm_xr, 'count':dc_xr})
+    xr_ds = xr.Dataset({'delta_plus':dp_xr, 'delta_minus':dm_xr, 'bias':db_xr, 'count':dc_xr})
     xr_ds['NRUNS'] = NRUNS
 
     A, T = np.meshgrid(ani_vals, theta_vals, indexing='ij')
@@ -438,8 +499,10 @@ if __name__ == "__main__":
 
     a1 = ax[0, 0].pcolormesh(T, A, delta_plus, norm=LogNorm())
     a2 = ax[0, 1].pcolormesh(T, A, delta_minus, norm=LogNorm())
-    a3 = ax[1, 0].pcolormesh(T, A, (100*delta_plus)/A , norm=LogNorm(vmax=100))
-    a4 = ax[1, 1].pcolormesh(T, A, (100*delta_minus)/A, norm=LogNorm(vmax=100))
+    # a3 = ax[1, 0].pcolormesh(T, A, (100*delta_plus)/A , norm=LogNorm(vmax=100))
+    # a4 = ax[1, 1].pcolormesh(T, A, (100*delta_minus)/A, norm=LogNorm(vmax=100))
+    a3 = ax[1, 0].pcolormesh(T, A, (10**(delta_plus) - 1.0) * 100, norm=LogNorm(vmax=100))
+    a4 = ax[1, 1].pcolormesh(T, A, (1.0 - 10**(-delta_minus)) * 100, norm=LogNorm(vmax=100))
 
     [ax[i,j].set_yscale('log') for i in range(2) for j in range(2)]
 

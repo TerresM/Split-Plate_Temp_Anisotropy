@@ -141,7 +141,7 @@ def derive_reduced_vdf(spc_ds, DATASET=True):
 
         array_units = ['Degrees',
                        'Degrees',
-                       'Volts',
+                       'pA',
                        'Volts',
                        vel_lo.unit,
                        vel_hi.unit,
