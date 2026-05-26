@@ -163,55 +163,6 @@ def log_likelihood_hierarchical_3d(theta, vzbx, vx, vzby, vy, bz, var_x_array, v
     
     return -0.5 * (L_x + L_y)    
 
-# @njit
-# def log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, bias_slice_x,
-#                                                dp_slice_y, dm_slice_y, bias_slice_y):
-#     log_alpha_true, log_alpha_eff_x, log_alpha_eff_y = theta
-
-#     if not (-2.0 < log_alpha_true  < 2.0): return -np.inf
-#     if not (-2.0 < log_alpha_eff_x < 2.0): return -np.inf
-#     if not (-2.0 < log_alpha_eff_y < 2.0): return -np.inf
-
-#     alpha_true = 10**(log_alpha_true)
-    
-#     # Make sure we do not exceed the boundaries.
-#     alpha_true_lookup = max(min(alpha_true, ani_list[-1]), ani_list[0]) #np.clip(alpha_true, ani_list[0], ani_list[-1])
-
-#     ### Calculate the log prior for x
-#     valid_x = np.isfinite(dp_slice_x) & np.isfinite(dm_slice_x) & np.isfinite(bias_slice_x)
-
-#     if np.sum(valid_x) < 2:
-#         log_P_eff_x = 0.0
-#     else:
-#         log_dp_x = np.interp(alpha_true_lookup, ani_list[valid_x], dp_slice_x[valid_x])
-#         log_dm_x = np.interp(alpha_true_lookup, ani_list[valid_x], dm_slice_x[valid_x])
-#         log_bias_x = np.interp(alpha_true_lookup, ani_list[valid_x], bias_slice_x[valid_x])
-
-#         expected_x = log_alpha_true + log_bias_x
-
-#         sig_x = log_dp_x if log_alpha_eff_x > expected_x else log_dm_x
-#         sig_x = max(sig_x, 1e-3)
-#         # Probability calculation
-#         log_P_eff_x = -np.log(log_dp_x + log_dm_x) - 0.5 * ((log_alpha_eff_x - expected_x) / sig_x)**2
-
-#     ### Calculate the log prior for y
-#     valid_y = np.isfinite(dp_slice_y) & np.isfinite(dm_slice_y) & np.isfinite(bias_slice_y)
-
-#     if np.sum(valid_y) < 2:
-#         log_P_eff_y = 0.0
-#     else:
-#         log_dp_y = np.interp(alpha_true, ani_list[valid_y], dp_slice_y[valid_y])
-#         log_dm_y = np.interp(alpha_true, ani_list[valid_y], dm_slice_y[valid_y])
-#         log_bias_y = np.interp(alpha_true, ani_list[valid_y], bias_slice_y[valid_y])
-    
-#         expected_y = log_alpha_true + log_bias_y
-#         sig_y = log_dp_y if log_alpha_eff_y > expected_y else log_dm_y
-#         sig_y = max(sig_y, 1e-3)
-#         # Probability calculation
-#         log_P_eff_y = -np.log(log_dp_y + log_dm_y) - 0.5 * ((log_alpha_eff_y - expected_y) / sig_y)**2
-        
-#     return log_P_eff_x + log_P_eff_y
-
 @njit
 def log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, bias_slice_x,
                                                dp_slice_y, dm_slice_y, bias_slice_y):
@@ -223,41 +174,110 @@ def log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, bias_slic
 
     log_ani_list = np.log10(ani_list)
     
-    # --- THE FIX: Evaluate the map based on the measured effective values! ---
     log_eff_x_lookup = max(min(log_alpha_eff_x, log_ani_list[-1]), log_ani_list[0])
     log_eff_y_lookup = max(min(log_alpha_eff_y, log_ani_list[-1]), log_ani_list[0])
 
-    ### Calculate the log prior for x
-    valid_x = np.isfinite(dp_slice_x) & np.isfinite(dm_slice_x)
+    valid_x = np.isfinite(dp_slice_x) & np.isfinite(dm_slice_x) & np.isfinite(bias_slice_x)
 
     if np.sum(valid_x) < 2:
         log_P_eff_x = 0.0
     else:
-        # Interpolate using log_eff_x_lookup
         log_dp_x = np.interp(log_eff_x_lookup, log_ani_list[valid_x], dp_slice_x[valid_x])
         log_dm_x = np.interp(log_eff_x_lookup, log_ani_list[valid_x], dm_slice_x[valid_x])
+        log_bias_x = np.interp(log_eff_x_lookup, log_ani_list[valid_x], bias_slice_x[valid_x])
 
-        expected_x = log_alpha_true 
+        expected_x = log_alpha_true + log_bias_x
+
         sig_x = log_dp_x if log_alpha_eff_x > expected_x else log_dm_x
         sig_x = max(sig_x, 1e-3)
         log_P_eff_x = -np.log(log_dp_x + log_dm_x) - 0.5 * ((log_alpha_eff_x - expected_x) / sig_x)**2
 
-    ### Calculate the log prior for y
-    valid_y = np.isfinite(dp_slice_y) & np.isfinite(dm_slice_y) 
+    ### Calculate the log prior for Y
+    valid_y = np.isfinite(dp_slice_y) & np.isfinite(dm_slice_y) & np.isfinite(bias_slice_y)
 
     if np.sum(valid_y) < 2:
         log_P_eff_y = 0.0
     else:
-        # Interpolate using log_eff_y_lookup
         log_dp_y = np.interp(log_eff_y_lookup, log_ani_list[valid_y], dp_slice_y[valid_y])
         log_dm_y = np.interp(log_eff_y_lookup, log_ani_list[valid_y], dm_slice_y[valid_y])
+        log_bias_y = np.interp(log_eff_y_lookup, log_ani_list[valid_y], bias_slice_y[valid_y])
         
-        expected_y = log_alpha_true 
+        expected_y = log_alpha_true + log_bias_y
+        
         sig_y = log_dp_y if log_alpha_eff_y > expected_y else log_dm_y
         sig_y = max(sig_y, 1e-3)
         log_P_eff_y = -np.log(log_dp_y + log_dm_y) - 0.5 * ((log_alpha_eff_y - expected_y) / sig_y)**2
         
-    return log_P_eff_x + log_P_eff_y
+    # --- THE PHYSICAL INFORMATIVE PRIOR ---
+    log_P_physical = 0.0
+    penalty_steepness = 0.05 
+    
+    if log_alpha_true > 1.0:
+        log_P_physical = -0.5 * ((log_alpha_true - 1.0) / penalty_steepness)**2
+    elif log_alpha_true < -1.0:
+        log_P_physical = -0.5 * ((log_alpha_true - (-1.0)) / penalty_steepness)**2
+        
+    return log_P_eff_x + log_P_eff_y + log_P_physical
+
+# @njit
+# def log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, bias_slice_x,
+#                                                dp_slice_y, dm_slice_y, bias_slice_y):
+#     log_alpha_true, log_alpha_eff_x, log_alpha_eff_y = theta
+
+#     # The hard brick walls (Absolute mathematical limits)
+#     if not (-2.0 < log_alpha_true  < 2.0): return -np.inf
+#     if not (-2.0 < log_alpha_eff_x < 2.0): return -np.inf
+#     if not (-2.0 < log_alpha_eff_y < 2.0): return -np.inf
+
+#     log_ani_list = np.log10(ani_list)
+    
+#     # The Statistically Pure Generative Lookup
+#     log_alpha_true_lookup = max(min(log_alpha_true, log_ani_list[-1]), log_ani_list[0])
+
+#     ### Calculate the log prior for X
+#     valid_x = np.isfinite(dp_slice_x) & np.isfinite(dm_slice_x) & np.isfinite(bias_slice_x)
+
+#     if np.sum(valid_x) < 2:
+#         log_P_eff_x = 0.0
+#     else:
+#         log_dp_x = np.interp(log_alpha_true_lookup, log_ani_list[valid_x], dp_slice_x[valid_x])
+#         log_dm_x = np.interp(log_alpha_true_lookup, log_ani_list[valid_x], dm_slice_x[valid_x])
+#         log_bias_x = np.interp(log_alpha_true_lookup, log_ani_list[valid_x], bias_slice_x[valid_x])
+
+#         expected_x = log_alpha_true + log_bias_x
+
+#         sig_x = log_dp_x if log_alpha_eff_x > expected_x else log_dm_x
+#         sig_x = max(sig_x, 1e-3)
+#         log_P_eff_x = -np.log(log_dp_x + log_dm_x) - 0.5 * ((log_alpha_eff_x - expected_x) / sig_x)**2
+
+#     ### Calculate the log prior for Y
+#     valid_y = np.isfinite(dp_slice_y) & np.isfinite(dm_slice_y) & np.isfinite(bias_slice_y)
+
+#     if np.sum(valid_y) < 2:
+#         log_P_eff_y = 0.0
+#     else:
+#         log_dp_y = np.interp(log_alpha_true_lookup, log_ani_list[valid_y], dp_slice_y[valid_y])
+#         log_dm_y = np.interp(log_alpha_true_lookup, log_ani_list[valid_y], dm_slice_y[valid_y])
+#         log_bias_y = np.interp(log_alpha_true_lookup, log_ani_list[valid_y], bias_slice_y[valid_y])
+        
+#         expected_y = log_alpha_true + log_bias_y
+        
+#         sig_y = log_dp_y if log_alpha_eff_y > expected_y else log_dm_y
+#         sig_y = max(sig_y, 1e-3)
+#         log_P_eff_y = -np.log(log_dp_y + log_dm_y) - 0.5 * ((log_alpha_eff_y - expected_y) / sig_y)**2
+        
+#     # --- NEW: THE PHYSICAL INFORMATIVE PRIOR ---
+#     # We penalize the TRUE state if it leaves the physical bounds of 0.1 to 10.0 (log space -1.0 to 1.0)
+#     log_P_physical = 0.0
+#     penalty_steepness = 0.05  # Adjust this to make the drop-off steeper or softer
+    
+#     if log_alpha_true > 1.0:
+#         log_P_physical = -0.5 * ((log_alpha_true - 1.0) / penalty_steepness)**2
+#     elif log_alpha_true < -1.0:
+#         log_P_physical = -0.5 * ((log_alpha_true - (-1.0)) / penalty_steepness)**2
+        
+#     # Add the physical penalty to the total score
+#     return log_P_eff_x + log_P_eff_y + log_P_physical
 
 @njit
 def log_probability_hierarchical_3d(theta, vzbx, vx, vzby, vy, bz, ani_list, 
@@ -348,7 +368,11 @@ def run_emcee_hierarchical_3d(vzbx, vx, vzby, vy, bz, uncert_map,
                                     var_x_array, var_y_array)
             )
     
-    sampler.run_mcmc(pos, 250, progress=False)
+
+    sampler.run_mcmc(pos, 600, progress=False)
+
+    tau = sampler.get_autocorr_time(quiet=True)
+    print(f"Autocorrelation time: {np.mean(tau):.1f} steps")
 
     log_samples = sampler.get_chain(discard=100, flat=True)
     samples = 10**(log_samples)
@@ -683,7 +707,7 @@ def calculate_spc_anisotropy(ds, uncertainty_map, method='Bayesian_MCMC',
                     labels = [r"$\alpha_{true}$", r"$\alpha_{eff,x}$", r"$\alpha_{eff,y}$"]
                     fig = corner.corner(np.log10(samples), labels=labels, 
                                         quantiles=[0.16, 0.5, 0.84], show_titles=True)
-                    plt.suptitle(f"MCMC Posterior: {block_time}")
+                    plt.suptitle(f"MCMC Posterior: {block_time}", y=1.05, fontsize=14)
                     plt.savefig(f'{plot_dir}/updated_corner_{safe_time}.png', dpi=150, bbox_inches='tight')
                     plt.close()
                 except Exception as e:
