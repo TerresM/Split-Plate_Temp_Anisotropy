@@ -109,12 +109,16 @@ def derive_reduced_vdf(spc_ds, DATASET=True):
 
     # Reduced rdf value, this is not quite accurate as it does not take into account the geometric factor. 
     # However, the geometric factor is removed once the re-normalization in the fitting is acheived. 
-    rdf = (total_current.data * 1e-12 * 10000) / (c.e.si * vel_mid * dv)
+    rdf = ((total_current.data * u.pA) / (5.456 * u.cm**(2))) / (c.e.si * vel_mid * dv)   # assume the full collector plate area: 1.31783 cm**2
+    rdf = rdf.si
+    rdf = rdf.to(u.s/u.cm**4)
 
     # If the differential charge flux is in the dataset lets include that
     rdf_charge_flux = None
     if 'diff_charge_flux_density' in list(ds.data_vars):
-        rdf_charge_flux = (ds['diff_charge_flux_density'].data * 1e-12 * 10000) / (c.e.si * vel_mid * dv)
+        rdf_charge_flux = (ds['diff_charge_flux_density'].data * (u.pA/u.cm**2)) / (c.e.si * vel_mid * dv)
+        rdf_charge_flux = rdf_charge_flux.si
+        rdf_charge_flux = rdf_charge_flux.to(u.s/u.cm**4)
 
 
     # get the x and y components

@@ -237,18 +237,23 @@ def gen_uncertainty_map_with_bias():
     bias = map.bias.data
     count = map['count'].data
 
+    max_valid_dp = np.nanmax(delta_plus)
+    max_valid_dm = np.nanmax(delta_minus)
+
     percent = 100*count/np.nanmax(count)
-    mask = percent < 90 
+    mask = percent < 70 
 
     delta_plus[mask] = np.nan
     delta_minus[mask] = np.nan
     bias[mask] = np.nan
 
-    # # Now we are going to fill all NaN values. NOTE: This could be simpler but it works!
-    # unrealisitic_bound = 1e4
-    # delta_plus = np.nan_to_num(delta_plus, nan=unrealisitic_bound)
-    # delta_minus = np.nan_to_num(delta_minus, nan=unrealisitic_bound)
-    # bias        = np.nan_to_num(bias, nan=unrealisitic_bound)
+    # fill_dp = max_valid_dp * 1.2
+    # fill_dm = max_valid_dm * 1.2
+
+    # # # Now we are going to fill all NaN values. NOTE: This could be simpler but it works!
+    # delta_plus = np.nan_to_num(delta_plus, nan=fill_dp)
+    # delta_minus = np.nan_to_num(delta_minus, nan=fill_dm)
+    # bias        = np.nan_to_num(bias, nan=0.0)
 
     return (theta, ani, delta_plus, delta_minus, bias)
 

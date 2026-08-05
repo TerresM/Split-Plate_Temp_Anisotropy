@@ -13,6 +13,8 @@ from matplotlib.colors import LogNorm
 
 from scipy.stats import binned_statistic_2d
 
+from collections import defaultdict
+
 plt.ion()
 
 def calculate_parallel_beta_and_anisotropy(ds, DTYPE='fit'):
@@ -59,7 +61,7 @@ def calculate_parallel_beta_and_anisotropy(ds, DTYPE='fit'):
 
     # Anisotropy (R)
     # This is the T_perp / T_par value you calculated previously
-    R = ds['T_ani_avg'].data
+    R = ds['T_ani_psi'].data
 
     # --- 3. Unit Conversions ---
     n_p_SI = n_p * 1e6          # cm^-3 -> m^-3
@@ -115,6 +117,8 @@ def add_hellinger_lines(ax, beta_range=(0.01, 100)):
     mask_aic = (x > 0.01)
     y_aic =  Hellinger_expression(x[mask_aic], 0.43, 0.0004, 0.42)
     ax.plot(x[mask_aic], y_aic, 'k-', linewidth=1.5, label='Cyclotron')
+
+    # ax.plot(x[mask_aic], 1.20*y_aic, 'r-', linewidth=1.5, label='1.2 Cyclotron')
 
     # Mirror Instability
     # Parameters: a=0.77, b=0.76, beta0=0.016
@@ -273,6 +277,14 @@ def make_contour_brazil_plot(beta_vals, ani_vals, NORMALIZE=False, SAVEFILE=None
 
         plt.tight_layout()
 
+def is_good(metric, LOW=0.5, HIGH=2.0):
+    return (metric > LOW) & (metric < HIGH)
+
+# 1. Define the theoretical Cyclotron threshold (if not already defined)
+def calc_cyclotron_threshold(beta):
+    # Valid for beta > 0.01
+    return 1.0 + 0.43 * (beta + 0.0004)**(-0.42)
+
 if __name__ == "__main__":
     # date_list = ['2023-09-21', '2023-09-22', '2023-09-23', '2023-09-24', '2023-09-25', '2023-09-26']
 
@@ -293,25 +305,29 @@ if __name__ == "__main__":
 
     xr_wave_list = []
     xr_ani_list = []
+    xr_l3_list = []
     for date in loaded_list:
         try:
             year, month, day = date.split('-')
             xr_wave = cdflib.xarray.cdf_to_xarray(f'./v1.3/{year}/{month}/PSP_wavePower_{date}_v1.3.cdf')
-            # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{date}_peak_track_bavg__averaged_4s.cdf')
-            xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{date}_peak_track_averaged_4s_Final.cdf')
-            # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/stat_fit/SPC_Anisotropy_{date}_peak_track_averaged_4s_NEW_3PFIT_statfit.cdf')
-            # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{date}_peak_track_averaged_4s_60s_field.cdf')
-            
-            xr_wave = xr_wave.where(xr_wave != -1e31, np.nan)
+            # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D/SPC_Anisotropy_{date}_peak_track_averaged_4s.cdf')
+            # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_averaged_4s.cdf')
+            # xr_ani = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_fit4s_gflag.cdf')#peak_track_averaged_4s.cdf')
+            xr_ani = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_Cauchy_fit4s_gflag.cdf')
             xr_ani = xr_ani.where(xr_ani != -1e31, np.nan)
 
-            xr_wave_list.append(xr_wave)
             xr_ani_list.append(xr_ani)
+            
+            xr_wave = xr_wave.where(xr_wave != -1e31, np.nan)
+
+            xr_wave_list.append(xr_wave)
+            # xr_ani_list.append(xr_ani.drop_dims('vector_index'))
         except:
             print(f'No data found for {date}')
 
     xr_wave_merge = xr.concat(xr_wave_list, dim='epoch')
-    xr_ani_merge  = xr.concat(xr_ani_list, dim='time')
+    xr_ani_merge  = xr.concat(xr_ani_list, dim='Epoch')
+    xr_ani_merge = xr_ani_merge.rename({'Epoch':'time'})
 
     # We are going to do a 10 point rolling average of xr_wave
     # xr_wave_roll = xr_wave_merge.rolling(epoch=10, center=True).mean()
@@ -320,20 +336,79 @@ if __name__ == "__main__":
     # xr_wave_int = xr_wave_roll.interp(epoch=xr_ani_merge.time.data)
     xr_wave_int = xr_wave_resample.interp(epoch=xr_ani_merge.time.data)
 
+    anisotropy  = xr_ani_merge['T_ani_avg'].data
+
     # Get the parallel plasma beta
     beta_para, T_ani = calculate_parallel_beta_and_anisotropy(xr_ani_merge, DTYPE='corefit')
+    T_ani = T_ani
+
+    ani_chi = xr_ani_merge['T_ani_chi'].data#[mask_ani_x]
+    time_chi = xr_ani_merge['time'].data#[mask_ani_x]
+    ani_psi = xr_ani_merge['T_ani_psi'].data#[mask_ani_y]
+    time_psi = xr_ani_merge['time'].data#[mask_ani_y]
+
+    # Get the chi squared data product. 
+    chi_sq_joint = xr_ani_merge['chi_sq_joint'].data
+    chi_sq_chi   = xr_ani_merge['chi_sq_chi'].data
+    chi_sq_psi   = xr_ani_merge['chi_sq_psi'].data
+
+    # Get the effective chi_sq valeus
+    chi_sq_xeff = xr_ani_merge['chi_sq_eff_x'].data
+    chi_sq_yeff = xr_ani_merge['chi_sq_eff_y'].data
+
+    dof_ratio = chi_sq_joint / (chi_sq_chi + chi_sq_psi)
+    chi_sq_joint_eff = dof_ratio * (chi_sq_xeff + chi_sq_yeff)
 
     max_flag = (xr_ani_merge.total_max_flag.data > 0)
-    
-    uncert = (50 * (xr_ani_merge.T_ani_avg_delta_plus.data + xr_ani_merge.T_ani_avg_delta_plus.data))/xr_ani_merge.T_ani_avg.data
-    # uncert = (100 * xr_ani_merge.T_ani_avg_uncert.data)/xr_ani_merge.T_ani_avg.data
-    uncert[np.isinf(uncert)] = np.nan
+    # New uncertainty map
+    # Extract the base parameters
+    mu = xr_ani_merge.T_ani_avg.data
+    delta_minus = xr_ani_merge.T_ani_avg_delta_minus.data
+    delta_plus = xr_ani_merge.T_ani_avg_delta_plus.data
 
-    uncert_flag = (uncert < 50) & np.isfinite(uncert)
+    # Reconstruct the 16th and 84th percentiles
+    p84 = mu + delta_plus
+    p16 = mu - delta_minus
 
-    t_ani_flag = (T_ani > 0.15) & (T_ani < 9.85)
+    # Safety check: Anisotropy strictly > 0, so P16 should be > 0.
+    # If P16 <= 0, the MCMC hit the zero-boundary hard (a highly uncertain fit).
+    valid_bounds = (p16 > 0) & (p84 > 0)
 
-    max_flag = max_flag & uncert_flag & t_ani_flag
+    # Calculate the logarithmic width of the 68% credible interval
+    # We initialize with NaNs to handle the invalid bounds safely
+    log_width = np.full_like(mu, np.nan)
+    log_width[valid_bounds] = np.log10(p84[valid_bounds] / p16[valid_bounds])
+
+    # Define your filter threshold
+    # A log_width of ~0.086 means the upper bound is 22% larger than the lower bound.
+    # A log_width of ~0.176 means the upper bound is 50% larger than the lower bound.
+    max_allowable_log_width = 0.176  # Adjust this threshold based on your needs
+
+    strict_uncert_flag = (log_width < max_allowable_log_width) & np.isfinite(log_width)
+
+    # The hardware geometric limits we defined earlier
+    xangle = xr_ani_merge['B_x_flow_angle'].data
+    yangle = xr_ani_merge['B_y_flow_angle'].data
+
+    valid_geometry = (np.abs(xangle) > 5) & (np.abs(xangle) < 85) & \
+                     (np.abs(yangle) > 5) & (np.abs(yangle) < 85)
+
+    valid_anis = (anisotropy > 0.15) & (anisotropy < 9.0) 
+
+    # heat flux flag
+    beam_vals = xr_ani_merge.n3_fit.data
+    core_vals = xr_ani_merge.np1_fit.data
+
+    hf_flag = np.isnan(beam_vals) & (np.isnan(xr_ani_merge.na_fit.data))#| (beam_vals/core_vals < 0.001)
+
+    # Bfield flag
+    x_flow_angles = (xr_ani_merge.B_x_flow_angle.data > 10) & (xr_ani_merge.B_x_flow_angle.data < 80)
+    y_flow_angles = (xr_ani_merge.B_y_flow_angle.data > 10) & (xr_ani_merge.B_y_flow_angle.data < 80)
+    flow_angle_flag = x_flow_angles | y_flow_angles
+
+    chi_sq_flag = (xr_ani_merge.chi_sq_joint.data >= 0.5) & (xr_ani_merge.chi_sq_joint.data <= 1.5)
+
+    max_flag = (xr_ani_merge['total_max_flag'].values > 0) & (strict_uncert_flag) & (valid_geometry) & (valid_anis)  
 
     # Lets try the scatter plot colored by wave power.
     x_data = np.log10(beta_para[max_flag])
@@ -419,20 +494,6 @@ if __name__ == "__main__":
     ax.legend(loc='upper right', fontsize=12)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     fig, ax = plt.subplots(figsize=(8, 6), dpi=120)
 
     # Plot the 2D histogram
@@ -480,7 +541,7 @@ if __name__ == "__main__":
     # ax.grid(True, which='both', linestyle='-', alpha=0.2)
     ax.legend(loc='upper right', fontsize=12)
 
-    plt.savefig('./figures/wavepower_brazil_plot.png')
+    # plt.savefig('./figures/wavepower_brazil_plot.png')
 
 
 
@@ -505,3 +566,45 @@ if __name__ == "__main__":
     beta = 10**(x_edge[valid_lh_bin_x])
 
 
+    # 2. Extract the valid data arrays based on your max_flag
+    valid_times = xr_ani_merge.time.data[max_flag]
+    valid_beta = beta_para[max_flag]
+    valid_ani = T_ani[max_flag]
+
+    # 3. Calculate the theoretical Cyclotron limit for each data point
+    theoretical_cyc_ani = calc_cyclotron_threshold(valid_beta)
+
+    # 4. Define what "well above" means mathematically
+    # Setting this to 1.20 means you are grabbing points that are at least 
+    # 20% higher than the theoretical Cyclotron instability line.
+    ABOVE_MULTIPLIER = 1.20 
+    lower_boundary = theoretical_cyc_ani * ABOVE_MULTIPLIER
+
+    # 5. Create the mask
+    # We ensure beta > 0.01 to stay within the valid bounds of the Hellinger fits
+    well_above_mask = (valid_ani > lower_boundary) & (valid_beta > 0.01)
+
+    # 6. Extract the physical data and timestamps!
+    timestamps_above_cyclotron = valid_times[well_above_mask]
+    beta_above_cyclotron = valid_beta[well_above_mask]
+    ani_above_cyclotron = valid_ani[well_above_mask]
+
+    print(f"Found {len(timestamps_above_cyclotron)} events well above the Cyclotron threshold.")
+
+    time_strings = np.datetime_as_string(timestamps_above_cyclotron, unit='s')
+
+    grouped_dates = defaultdict(list)
+
+    for ts in time_strings:
+        date_part, time_part = ts.split('T')
+        grouped_dates[date_part].append(ts)
+
+    unique_dates = list(grouped_dates.keys())
+    print(f"Unique Dates: {unique_dates}\n")
+
+    for date in unique_dates:
+        daily_timestamps = grouped_dates[date]
+        print(f"Date: {date}")
+        print(f"Total events: {len(daily_timestamps)}")
+        print(f"Times: {daily_timestamps}\n")
+        print("-" * 40)

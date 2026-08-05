@@ -230,7 +230,7 @@ def compute_bayesian_results(alpha_chi, sig_plus_chi, sig_minus_chi,
                              Nx_calc, Ny_calc, Nz_calc, Bvec, 
                              peak_azimuth, peak_elevation, timestamp, ds,
                              chi_sq_joint=np.nan, chi_sq_x=np.nan, chi_sq_y=np.nan,
-                             norm_res_sq_x=None, norm_res_sq_y=None): 
+                             norm_res_sq_x=None, norm_res_sq_y=None, raw_emp_alpha=np.nan): 
     
     # Handle the NaN arrays for skipped timestamps
     if norm_res_sq_x is None:
@@ -243,6 +243,8 @@ def compute_bayesian_results(alpha_chi, sig_plus_chi, sig_minus_chi,
         T_ani_avg             = avg_alpha,
         T_ani_avg_delta_plus  = avg_sig_plus,
         T_ani_avg_delta_minus = avg_sig_minus,
+
+        empirical_alpha_guess = raw_emp_alpha,
 
         T_ani_chi             = alpha_chi,
         T_ani_chi_delta_plus  = sig_plus_chi,
@@ -469,9 +471,34 @@ def run_emcee_hierarchical(vzbx, vx, vzby, vy, weights, bz, uncert_map, xangle, 
 
     return alpha_50, sig_plus, sig_minus, samples
 
+# @njit
+# def log_likelihood_hierarchical_3d(theta, vzbx, vx, vzby, vy, bz, var_x_array, var_y_array):
+#     alpha_true, alpha_eff_x, alpha_eff_y = theta
+    
+#     expected_slope_x = ((1.0 - alpha_eff_x) * bz) / (1.0 - (1.0 - alpha_eff_x) * (1.0 - bz**2))
+#     expected_slope_y = ((1.0 - alpha_eff_y) * bz) / (1.0 - (1.0 - alpha_eff_y) * (1.0 - bz**2))
+    
+#     # Use strict Inverse Variance Weights (W = 1/sigma^2)
+#     W_x = 1.0 / var_x_array
+#     W_y = 1.0 / var_y_array
+    
+#     intercept_x = np.sum(W_x * (vx - expected_slope_x * vzbx)) / np.sum(W_x)
+#     intercept_y = np.sum(W_y * (vy - expected_slope_y * vzby)) / np.sum(W_y)
+    
+#     mu_x = expected_slope_x * vzbx + intercept_x
+#     mu_y = expected_slope_y * vzby + intercept_y
+    
+#     # Fractional weights removed! Variance strictly dictates the penalty.
+#     L_x = np.sum(((vx - mu_x)**2 / var_x_array) + 1.837877 + np.log(var_x_array))
+#     L_y = np.sum(((vy - mu_y)**2 / var_y_array) + 1.837877 + np.log(var_y_array))
+    
+#     return -0.5 * (L_x + L_y)
 @njit
 def log_likelihood_hierarchical_3d(theta, vzbx, vx, vzby, vy, bz, var_x_array, var_y_array):
-    alpha_true, alpha_eff_x, alpha_eff_y = theta
+    log_alpha_true, log_alpha_eff_x, log_alpha_eff_y = theta
+
+    alpha_eff_x = 10**(log_alpha_eff_x)
+    alpha_eff_y = 10**(log_alpha_eff_y)
     
     expected_slope_x = ((1.0 - alpha_eff_x) * bz) / (1.0 - (1.0 - alpha_eff_x) * (1.0 - bz**2))
     expected_slope_y = ((1.0 - alpha_eff_y) * bz) / (1.0 - (1.0 - alpha_eff_y) * (1.0 - bz**2))
@@ -492,32 +519,92 @@ def log_likelihood_hierarchical_3d(theta, vzbx, vx, vzby, vy, bz, var_x_array, v
     
     return -0.5 * (L_x + L_y)
 
-@njit
-def log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, dp_slice_y, dm_slice_y):
-    alpha_true, alpha_eff_x, alpha_eff_y = theta
+# @njit
+# def log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, dp_slice_y, dm_slice_y):
+#     alpha_true, alpha_eff_x, alpha_eff_y = theta
     
-    if not (0.1 < alpha_true < 10.0): return -np.inf
-    if not (0.1 < alpha_eff_x < 10.0): return -np.inf
-    if not (0.1 < alpha_eff_y < 10.0): return -np.inf
+#     if not (0.1 < alpha_true < 10.0): return -np.inf
+#     if not (0.1 < alpha_eff_x < 10.0): return -np.inf
+#     if not (0.1 < alpha_eff_y < 10.0): return -np.inf
         
-    dp_x = np.interp(alpha_true, ani_list, dp_slice_x)
-    dm_x = np.interp(alpha_true, ani_list, dm_slice_x)
-    dp_y = np.interp(alpha_true, ani_list, dp_slice_y)
-    dm_y = np.interp(alpha_true, ani_list, dm_slice_y)
+#     dp_x = np.interp(alpha_true, ani_list, dp_slice_x)
+#     dm_x = np.interp(alpha_true, ani_list, dm_slice_x)
+#     dp_y = np.interp(alpha_true, ani_list, dp_slice_y)
+#     dm_y = np.interp(alpha_true, ani_list, dm_slice_y)
     
-    sig_x = dp_x if alpha_eff_x > alpha_true else np.abs(dm_x)
-    sig_x = max(sig_x, 1e-3)
-    log_P_eff_x = -np.log(dp_x + np.abs(dm_x)) - 0.5 * ((alpha_eff_x - alpha_true) / sig_x)**2
+#     sig_x = dp_x if alpha_eff_x > alpha_true else np.abs(dm_x)
+#     sig_x = max(sig_x, 1e-3)
+#     log_P_eff_x = -np.log(dp_x + np.abs(dm_x)) - 0.5 * ((alpha_eff_x - alpha_true) / sig_x)**2
     
-    sig_y = dp_y if alpha_eff_y > alpha_true else np.abs(dm_y)
-    sig_y = max(sig_y, 1e-3)
-    log_P_eff_y = -np.log(dp_y + np.abs(dm_y)) - 0.5 * ((alpha_eff_y - alpha_true) / sig_y)**2
+#     sig_y = dp_y if alpha_eff_y > alpha_true else np.abs(dm_y)
+#     sig_y = max(sig_y, 1e-3)
+#     log_P_eff_y = -np.log(dp_y + np.abs(dm_y)) - 0.5 * ((alpha_eff_y - alpha_true) / sig_y)**2
     
-    return log_P_eff_x + log_P_eff_y
+#     return log_P_eff_x + log_P_eff_y
 
 @njit
-def log_probability_hierarchical_3d(theta, vzbx, vx, vzby, vy, bz, ani_list, dp_slice_x, dm_slice_x, dp_slice_y, dm_slice_y, var_x_array, var_y_array):
-    lp = log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, dp_slice_y, dm_slice_y)
+def log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, bias_slice_x, dp_slice_y, dm_slice_y, bias_slice_y):
+    log_alpha_true, log_alpha_eff_x, log_alpha_eff_y = theta
+    
+    if not (-2.0 < log_alpha_true < 2.0): return -np.inf
+    if not (-2.0 < log_alpha_eff_x < 2.0): return -np.inf
+    if not (-2.0 < log_alpha_eff_y < 2.0): return -np.inf
+    
+    log_ani_list = np.log10(ani_list)
+
+    # log_eff_x_lookup = max(min(log_alpha_eff_x, log_ani_list[-1]), log_ani_list[0])
+    # log_eff_y_lookup = max(min(log_alpha_eff_y, log_ani_list[-1]), log_ani_list[0])
+
+    # Since we are using NaNs in the uncertainty map now we need to check here.
+    valid_x = np.isfinite(dp_slice_x) & np.isfinite(dm_slice_x) & np.isfinite(bias_slice_x)
+    valid_y = np.isfinite(dp_slice_y) & np.isfinite(dm_slice_y) & np.isfinite(bias_slice_y)
+
+    lookup_x = max(min(log_alpha_eff_x, log_ani_list[valid_x][-1]), log_ani_list[valid_x][0])
+    lookup_y = max(min(log_alpha_eff_y, log_ani_list[valid_y][-1]), log_ani_list[valid_y][0])
+
+    dp_x = np.interp(lookup_x, log_ani_list[valid_x], dp_slice_x[valid_x])
+    dm_x = np.interp(lookup_x, log_ani_list[valid_x], dm_slice_x[valid_x])
+    dp_y = np.interp(lookup_y, log_ani_list[valid_y], dp_slice_y[valid_y])
+    dm_y = np.interp(lookup_y, log_ani_list[valid_y], dm_slice_y[valid_y])
+
+    # dp_x = np.interp(log_alpha_eff_x, log_ani_list, dp_slice_x)
+    # dm_x = np.interp(log_alpha_eff_x, log_ani_list, dm_slice_x)
+    # dp_y = np.interp(log_alpha_eff_y, log_ani_list, dp_slice_y)
+    # dm_y = np.interp(log_alpha_eff_y, log_ani_list, dm_slice_y)
+    
+    log_bias_x = np.interp(lookup_x, log_ani_list[valid_x], bias_slice_x[valid_x])
+    log_bias_y = np.interp(lookup_y, log_ani_list[valid_y], bias_slice_y[valid_y])
+
+    expected_x = log_alpha_true + log_bias_x
+    expected_y = log_alpha_true + log_bias_y
+
+    if np.sum(valid_x) < 2: 
+        log_P_eff_x = 0.0
+    else:
+        sig_x = dp_x if log_alpha_eff_x > log_alpha_true else dm_x
+        sig_x = max(sig_x, 1e-3)
+        log_P_eff_x = -np.log(dp_x + dm_x) - 0.5 * ((log_alpha_eff_x - expected_x) / sig_x)**2
+    
+    if np.sum(valid_y) < 2:
+        log_P_eff_y = 0.0
+    else:
+        sig_y = dp_y if log_alpha_eff_y > log_alpha_true else dm_y
+        sig_y = max(sig_y, 1e-3)
+        log_P_eff_y = -np.log(dp_y + np.abs(dm_y)) - 0.5 * ((log_alpha_eff_y - expected_y) / sig_y)**2
+    
+    log_P_physical = 0.0
+    penalty_steepness = 0.05 
+    
+    if log_alpha_true > 1.0:
+        log_P_physical = -0.5 * ((log_alpha_true - 1.0) / penalty_steepness)**2
+    elif log_alpha_true < -1.0:
+        log_P_physical = -0.5 * ((log_alpha_true - (-1.0)) / penalty_steepness)**2
+
+    return log_P_eff_x + log_P_eff_y + log_P_physical
+
+@njit
+def log_probability_hierarchical_3d(theta, vzbx, vx, vzby, vy, bz, ani_list, dp_slice_x, dm_slice_x, bias_slice_x, dp_slice_y, dm_slice_y, bias_slice_y, var_x_array, var_y_array):
+    lp = log_prior_hierarchical_3d(theta, ani_list, dp_slice_x, dm_slice_x, bias_slice_x, dp_slice_y, dm_slice_y, bias_slice_y)
     if not np.isfinite(lp):
         return -np.inf
     return lp + log_likelihood_hierarchical_3d(theta, vzbx, vx, vzby, vy, bz, var_x_array, var_y_array)
@@ -526,48 +613,72 @@ def run_emcee_hierarchical_3d(vzbx, vx, vzby, vy, bz, uncert_map, xangle, yangle
     # Use Inverse Variance for the starting guess
     W_x = 1.0 / var_x_array
     sum_W_x = np.sum(W_x)
-    cx = np.sum(W_x * vzbx) / sum_W_x
-    cy = np.sum(W_x * vx) / sum_W_x
-    
-    slope_x = np.sum(W_x * (vzbx - cx) * (vx - cy)) / max(np.sum(W_x * (vzbx - cx)**2), 1e-6)
-    
-    emp_alpha = (-slope_x / (slope_x * (1. - bz**2) + bz)) + 1
-    emp_alpha = np.clip(emp_alpha, 0.15, 9.85)
 
-    angle_list, ani_list, dp_map, dm_map = uncert_map
+    if sum_W_x > 0:
+        cx = np.sum(W_x * vzbx) / sum_W_x
+        cy = np.sum(W_x * vx) / sum_W_x
+    
+        if np.sum(W_x * (vzbx - cx)**2) > 1e-6:
+            slope_x = np.sum(W_x * (vzbx - cx) * (vx - cy)) / max(np.sum(W_x * (vzbx - cx)**2), 1e-6)
+            emp_alpha = (-slope_x / (slope_x * (1. - bz**2) + bz)) + 1
+        else:
+            emp_alpha = 1.0
+    else:
+        emp_alpha = 1.0
+
+    raw_emp_alpha = emp_alpha
+
+    if np.isnan(emp_alpha):
+        emp_alpha = 1.0
+
+    if emp_alpha < 0:
+        tqdm.write('Negative input | Shifting to 1.0 as guess.')
+        emp_alpha = 1.0        
+
+    if emp_alpha < 0.15 or emp_alpha > 9.85:
+        tqdm.write("HEY THE CLIP THING IS ACTUALLY DOING A THING")
+        tqdm.write(f'The value of emp_alpha was: {emp_alpha}')
+
+    
+    # emp_alpha = np.clip(emp_alpha, 0.15, 9.85)
+    log_emp_alpha = np.log10(emp_alpha)
+
+    angle_list, ani_list, dp_map, dm_map, bias_map = uncert_map
     
     idx_x = np.nanargmin(np.abs(np.abs(xangle) - angle_list))
-    dp_slice_x = dp_map[idx_x, :]
-    dm_slice_x = dm_map[idx_x, :]
-    
+    dp_slice_x = dp_map[:, idx_x]
+    dm_slice_x = dm_map[:, idx_x]
+    bias_slice_x = bias_map[:, idx_x]
+
     idx_y = np.nanargmin(np.abs(np.abs(yangle) - angle_list))
-    dp_slice_y = dp_map[idx_y, :]
-    dm_slice_y = dm_map[idx_y, :]
+    dp_slice_y = dp_map[:, idx_y]
+    dm_slice_y = dm_map[:, idx_y]
+    bias_slice_y = bias_map[:, idx_y]
     
     nwalkers = 32
     ndim = 3  # Now strictly 3D!
     
-    pos_alpha_true = emp_alpha + 1e-2 * np.random.randn(nwalkers)
-    pos_alpha_eff_x = emp_alpha + 1e-2 * np.random.randn(nwalkers)
-    pos_alpha_eff_y = emp_alpha + 1e-2 * np.random.randn(nwalkers)
+    log_pos_alpha_true  = log_emp_alpha + 1e-1 * np.random.randn(nwalkers)
+    log_pos_alpha_eff_x = log_emp_alpha + 1e-1 * np.random.randn(nwalkers)
+    log_pos_alpha_eff_y = log_emp_alpha + 1e-1 * np.random.randn(nwalkers)
     
-    pos = np.vstack((pos_alpha_true, pos_alpha_eff_x, pos_alpha_eff_y)).T
+    pos = np.vstack((log_pos_alpha_true, log_pos_alpha_eff_x, log_pos_alpha_eff_y)).T
     
     sampler = emcee.EnsembleSampler(
         nwalkers, ndim, log_probability_hierarchical_3d, 
-        args = (vzbx, vx, vzby, vy, bz, ani_list, dp_slice_x, dm_slice_x, dp_slice_y, dm_slice_y, var_x_array, var_y_array)
+        args = (vzbx, vx, vzby, vy, bz, ani_list, dp_slice_x, dm_slice_x, bias_slice_x, dp_slice_y, dm_slice_y, bias_slice_y, var_x_array, var_y_array)
     )
     
-    sampler.run_mcmc(pos, 250, progress=False)
+    sampler.run_mcmc(pos, 200, progress=False)
     
-    samples = sampler.get_chain(discard=100, flat=True)
-    samples_true = samples[:,0]
+    samples = sampler.get_chain(discard=50, flat=True)
+    samples_true = 10**samples[:,0]
     
     alpha_16, alpha_50, alpha_84 = np.percentile(samples_true, [16, 50, 84])
     sig_minus = alpha_50 - alpha_16
     sig_plus = alpha_84 - alpha_50
 
-    return alpha_50, sig_plus, sig_minus, samples
+    return alpha_50, sig_plus, sig_minus, samples, raw_emp_alpha
 
 def _get_uncertainty(fit_vals, slope_error, Nz, field_error, flow_angle, calc_anisotropy, uncertainty_map):
     '''
@@ -709,7 +820,7 @@ def compute_anisotropy(params_chi, slope_err_chi, Tani_chi,
     def anisotropy_uncertainty(params, slope_err, angle, Tani, Nz, Bmag):
         sigma_b = ((1 - Nz**2)/Bmag**2)
         # sigma_b = 0
-        delta_plus, delta_minus, std, delta_mag, components = _get_uncertainty(
+        delta_plus, delta_minus, bias, std, delta_mag, components = _get_uncertainty(
             params, slope_err, Nz_calc, sigma_b, angle, Tani, uncertainty_map
         )
         return {
@@ -717,6 +828,7 @@ def compute_anisotropy(params_chi, slope_err_chi, Tani_chi,
             "uncertainty": delta_mag,
             "uncertainty_delta_plus": delta_plus,
             "uncertainty_delta_minus": delta_minus,
+            "bias" : bias,
             "fit_uncertainty": std**2,
             'components': components,
         }
@@ -1757,7 +1869,7 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
             var_x_array = np.maximum(term1_x + term2_x, 1e-4)
             var_y_array = np.maximum(term1_y + term2_y, 1e-4)
 
-            avg_alpha, avg_sig_plus, avg_sig_minus, samples = run_emcee_hierarchical_3d(
+            avg_alpha, avg_sig_plus, avg_sig_minus, samples, raw_emp_alpha = run_emcee_hierarchical_3d(
                 vzbx_fit, vx_fit, vzby_fit, vy_fit, 
                 block_nvec_avg[2], uncertainty_map, xangle, yangle,
                 var_x_array, var_y_array
@@ -1821,7 +1933,8 @@ def spc_calculate_anisotropy_groups(ds, uncertainty_map, threshold=0.5, NO_WEIGH
                 chi_sq_x=chi_sq_x,
                 chi_sq_y=chi_sq_y,
                 norm_res_sq_x=norm_res_sq_x,
-                norm_res_sq_y=norm_res_sq_y
+                norm_res_sq_y=norm_res_sq_y,
+                raw_emp_alpha = raw_emp_alpha
             )
 
             # if (count % 100 == 0): 

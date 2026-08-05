@@ -13,15 +13,21 @@ from functions.spc_current_to_rdf import derive_reduced_vdf, kp_file_to_derived_
 from functions.data_preprocessing import xarray_clean_variable as clean
 from functions.misc_functions import hampel_filter2
 from functions.smooth_spc_data import smooth_spc_resample
+from functions.spc_flow_angle_correction import spc_flow_angle_correction_1d_fast
 
-# from functions.spc_calc_anisotropy_v3 import (
-#     spc_calculate_anisotropy, 
-#     spc_calculate_anisotropy_groups,
-#     calculate_support_means_groups, 
-#     get_support_values
-# )
-
+from functions.spc_spike_removal import despike_dataset
 from functions.spc_calc_anisotropy import calculate_spc_anisotropy
+
+CAL_FILE_PATH = '/home/michael/Research/pySolarWind/spp_swp_spc_calfiles_spc_uvphithetalookup_20200417.idl'
+
+SUPPORT_VARS = [
+    'np_fit', 'wp_fit', 'vp_fit_SC',
+    'np1_fit', 'wp1_fit', 'vp1_fit_SC',
+    'n3_fit', 'w3_fit', 'v3_fit_SC',
+    'na_fit', 'wa_fit', 'va_fit_SC',
+    'np_moment', 'wp_moment', 'vp_moment_SC',
+    'general_flag'
+]
 
 def spc_select_key_values(spc_l2):
     spc = xr.Dataset(
@@ -42,22 +48,61 @@ def spc_select_key_values(spc_l2):
     )
     return spc
 
-def median_filter_current(spc_l2):
-    current_stack = np.stack([spc_l2.a_current.data, spc_l2.b_current.data, spc_l2.c_current.data, spc_l2.d_current.data])
+def generate_spc_filename(date_str, config_dict, method='Bayesian_MCMC', base_dir='./anisotropy_files'):
+    """
+    Generates a dynamic filename and ensures the output directory exists 
+    based on the processing configuration.
+    """
+    tags = []
+    
+    # 1. Base Modes and Timings
+    if config_dict.get('spc_mode'):
+        tags.append(config_dict['spc_mode'])
 
-    # set all fillvals to NaNs
-    current_stack[current_stack < 0] = np.nan
+    if config_dict.get('likelihood_method'):
+        tags.append(config_dict['likelihood_method'])
+        
+    if config_dict.get('fit_seconds'):
+        tags.append(f"fit{config_dict['fit_seconds']}s")
+        
+    smooth = config_dict.get('smooth_seconds')
+    if smooth:
+        if isinstance(smooth, int) or smooth.is_integer():
+            tags.append(f"smth{int(smooth)}s")
+        else:
+            tags.append(f"smth{int(smooth * 1000)}ms")
 
-    median_current = np.median(current_stack, axis=0)
+    # Add min_flux thresholding tag (e.g., 0.37 -> mf37)
+    min_flux = config_dict.get('min_flux')
+    if min_flux is not None:
+        tags.append(f"mf{int(min_flux * 100)}")
 
-    for i in range(4):
-        current_stack[i][current_stack[i] > 3*median_current] = median_current[current_stack[i] > 3*median_current]
+    # 2. Boolean Flags Mapping
+    # Map config keys to concise filename shorthands
+    flag_mapping = {
+        'weighted_fit' : 'weighted',
+        'flow_correction': 'flowcorr',
+        'avg_bfield': 'avgb',
+        'no_weights': 'nw',
+        'win_max': 'winmax',
+        'gen_flag': 'gflag'
+    }
+    
+    for key, shorthand in flag_mapping.items():
+        if config_dict.get(key):  # If True, append the shorthand
+            tags.append(shorthand)
 
-    vals = ['a', 'b', 'c', 'd']
-    for i, val in enumerate(vals):
-        spc_l2[f'{val}_current'].data = current_stack[i]
+    # Build the final string
+    tag_str = "_" + "_".join(tags) if tags else ""
+    
+    # 3. Directory Management
+    output_dir = f"{base_dir}/{method}"
+    os.makedirs(output_dir, exist_ok=True)
 
-    return spc_l2
+    # Final filename path
+    filename = f"{output_dir}/SPC_Anisotropy_{date_str}{tag_str}.cdf"
+    
+    return filename
 
 def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', credentials=None, SAVE=True, FPATH='./input_data/', KP_FILE=None, OFFLINE=None):
     btag = data_vars['fields'].removeprefix('mag_SC_')
@@ -105,7 +150,6 @@ def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', 
     if load_l2: 
         print('Loading in the l2 data')
         spc_l2 = load.file_to_xarray(file_dict['spc']['l2i']).rename({'mv_lo_dim' : 'mv_index'})
-        spc_l2 = median_filter_current(spc_l2)
 
         if  mode.lower() == 'full_scan':
             full_scan_flag = np.where(spc_l2.MODE_FLAG.data == 1)[0]
@@ -113,17 +157,20 @@ def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', 
         elif mode.lower() == 'peak_track':
             peak_track_flag = np.where(spc_l2.MODE_FLAG.data == 0)[0]
             spc_l2_data = spc_l2.isel(epoch=peak_track_flag)
+            # spc_l2_data = despike_dataset(spc_l2_data, window=5, sigma_threshold=5)
+            print("Despiking dataset!")
+            spc_l2_data = despike_dataset(spc_l2_data, threshold=4.0, spikemin=4.0)
         else:
             spc_l2_data = spc_l2
 
     if smooth_seconds and load_l2:
-        spc_red = smooth_spc_resample(spc_l2, smooth_seconds)
-        spc_red = spc_red.drop_attrs()
+        spc_smooth = smooth_spc_resample(spc_l2, smooth_seconds)
+        spc_smooth = spc_smooth.drop_attrs()
         if SAVE:
             print('Saving downsampled data to xarray for future use.')
-            cdflib.xarray.xarray_to_cdf(spc_red, f'./input_data/SPC_downsampled_spectra_{trange[0][:10]}_{time_tag}{time_unit}')
+            cdflib.xarray.xarray_to_cdf(spc_smooth, f'./input_data/SPC_downsampled_spectra_{trange[0][:10]}_{time_tag}{time_unit}')
     
-        spc_l2_data = spc_red
+        spc_l2_data = spc_smooth
 
     if KP_FILE:
         spc_rdf = kp_file_to_derived_reduced_vdf(spc_l2_data)
@@ -139,15 +186,49 @@ def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', 
     flds_inter  = fields.interp(epoch=spc_rdf.epoch)
     spc_rdf['b_vec'] = flds_inter
 
-    support_vars = ['np_fit', 'wp_fit', 'vp_fit_SC',
-                    'np1_fit', 'wp1_fit', 'vp1_fit_SC',
-                    'n3_fit', 'w3_fit', 'v3_fit_SC',
-                    'na_fit', 'wa_fit', 'va_fit_SC',
-                    'np_moment', 'wp_moment', 'vp_moment_SC',
-                    'general_flag']
+    support_vars = SUPPORT_VARS
 
     for var in support_vars:
         spc_rdf[var] = spc_l3[var]
+
+    try:
+        # Now we are implementing the flow angle corrections.
+        elevation = spc_rdf['elevation'].data
+        azimuth   = spc_rdf['azimuth'].data
+
+        mach_number = np.abs(spc_rdf['vp1_fit_SC'].data[:,2]/spc_rdf['wp1_fit'].data)
+        mach_number = np.broadcast_to(mach_number[:, None], elevation.shape)
+
+        mask = np.isfinite(elevation) & np.isfinite(mach_number)
+
+        elev_1d = elevation[mask]
+        azim_1d = azimuth[mask]
+        mach_1d = mach_number[mask]
+
+        elev_corr_1d, azim_corr_1d = spc_flow_angle_correction_1d_fast(
+            elev_1d, azim_1d, mach_1d, CAL_FILE_PATH    #'/home/michael/Research/pySolarWind/spp_swp_spc_calfiles_spc_uvphithetalookup_20200417.idl'
+        )
+
+        elev_corr_2d = elevation.copy()
+        azim_corr_2d = azimuth.copy()
+
+        elev_corr_2d[mask] = elev_corr_1d
+        azim_corr_2d[mask] = azim_corr_1d
+
+        # Append to xarray
+        spc_rdf['elev_corr'] = (['epoch', 'mv_index'], elev_corr_2d)
+        spc_rdf['azim_corr'] = (['epoch', 'mv_index'], azim_corr_2d)
+
+        spc_rdf['vx_corr'] = (['epoch', 'mv_index'], spc_rdf['vel_mid'].data * np.tan(np.radians(azim_corr_2d)))
+        spc_rdf['vy_corr'] = (['epoch', 'mv_index'], spc_rdf['vel_mid'].data * np.tan(-np.radians(elev_corr_2d)))
+    except Exception as e:
+        print(f"Cannot derive the flow angle corrections for {trange}. Reason: {e}")
+
+    if mode == 'peak_track':
+        # Keep only the high quality peak track events!
+        len_of_data = np.isfinite(spc_rdf['rdf'].data).sum(axis=1)
+        mask = (len_of_data < 16)
+        spc_rdf = spc_rdf.isel(epoch=~mask)
 
     return spc_rdf
 
@@ -163,8 +244,8 @@ def get_pA_flags(init_ds):
     max_flag = {}
     med_flag = {}
     for key in keys:
-        max_flag[f'{key}_max_flag'] = np.where(max_dict[f'{key}_max'] > 100, 2, np.where(max_dict[f'{key}_max'] > 10, 1, 0))
-        med_flag[f'{key}_med_flag'] = np.where(med_dict[f'{key}_med'] > 100, 2, np.where(med_dict[f'{key}_med'] > 10, 1, 0))
+        max_flag[f'{key}_max_flag'] = np.where(max_dict[f'{key}_max'] > 100, 2, np.where(max_dict[f'{key}_max'] > 15, 1, 0))
+        med_flag[f'{key}_med_flag'] = np.where(med_dict[f'{key}_med'] > 100, 2, np.where(med_dict[f'{key}_med'] > 15, 1, 0))
 
     data_dict = {**max_dict, **med_dict, **max_flag, **med_flag}
 
@@ -195,7 +276,7 @@ def time_index(i):
         return encounters[i][1], encounters[i][2]
     return None, None
 
-def process_anisotorpy_spc_event(date_str, config_dict, subrange=None):
+def process_anisotorpy_spc_event(date_str, config_dict, subrange=None, METHOD='Bayesian_MCMC', pos_id=0):
     if subrange is not None:
         tstart, tend = subrange
         range_desc = f"Subrange ({tstart} to {tend})"
@@ -217,14 +298,17 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange=None):
         smooth_seconds = config_dict['smooth_seconds']
         spc_mode = config_dict['spc_mode']
         no_weights = config_dict['no_weights']
+        weighted_fit = config_dict['weighted_fit']
         win_max = config_dict['win_max']
         min_flux = config_dict['min_flux']
+        flow_correction = config_dict['flow_correction']
         avg_bfield = config_dict['avg_bfield']
         data_vars = config_dict['data_vars']
         credentials = config_dict['credentials']
         uncert_map = config_dict['uncert_map']
         gen_flag   = config_dict['gen_flag']
         OFFLINE = config_dict['OFFLINE']
+        likelihood_method = config_dict['likelihood_method']
         
         trange = [tstart, tend]
 
@@ -244,43 +328,12 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange=None):
             return
         
         pa_flag = get_pA_flags(init_ds).rename({'epoch':'time'})
-        """
-        if fit_seconds is not None:
-            fit_steps = np.timedelta64(np.datetime64(tend, 'ns') - np.datetime64(tstart))/np.timedelta64(fit_seconds, 's')
-            fit_time  = np.datetime64(tstart, 'ns') + np.arange(fit_steps+1)*np.timedelta64(fit_seconds, 's')
-            windows = np.squeeze(np.dstack([fit_time[0:-1:1], fit_time[1::1]]))
 
-            subset = init_ds.drop_vars([v for v in init_ds.data_vars if v not in ["a_current", "b_current", "c_current", "d_current"]])
-            ds_groupby = subset.groupby(['epoch', 'mv_lo']).mean(skipna=True)
-            binned_ds = ds_groupby.groupby_bins('epoch', fit_time).mean(skipna=True)
-
-            midpoints = binned_ds.epoch_bins.to_index().mid
-            binned_ds = binned_ds.assign_coords(epoch=('epoch_bins', midpoints))
-            binned_ds = binned_ds.swap_dims({"epoch_bins":"epoch"}).drop_vars("epoch_bins")
-
-            pa_flag = get_pA_flags(binned_ds).rename({'epoch': 'time'})
-
-            if no_weights:
-                spc_anisotropy = spc_calculate_anisotropy_groups(init_ds, uncert_map, threshold=min_flux, NO_WEIGHTS=no_weights, groups=windows, WIN_MAX=win_max, USE_AVG_BFIELD=avg_bfield)    
-            else:
-                spc_anisotropy = spc_calculate_anisotropy_groups(init_ds, uncert_map, threshold=min_flux, groups=windows, WIN_MAX=win_max, USE_AVG_BFIELD=avg_bfield)
-
-            support_spc = calculate_support_means_groups(init_ds, groups=windows).rename({'epoch' : 'time'})
-        else:
-            if no_weights:
-                spc_anisotropy = spc_calculate_anisotropy(init_ds, uncert_map, NO_WEIGHTS=True, threshold=min_flux)
-            else:
-                spc_anisotropy = spc_calculate_anisotropy(init_ds, uncert_map, threshold=min_flux)
-
-            support_spc = get_support_values(init_ds).rename({'epoch' : 'time'})
-        """
         # Safely extract the plotting flag (defaults to False if not in config)
         plot_diagnostics = config_dict.get('plot_diagnostics', False)
 
         # Define the support variables we want to carry over to the final dataset
-        support_vars = ['np_fit', 'wp_fit', 'vp_fit_SC', 'np1_fit', 'wp1_fit', 'vp1_fit_SC', 
-                        'n3_fit', 'w3_fit', 'v3_fit_SC', 'na_fit', 'wa_fit', 'va_fit_SC', 
-                        'np_moment', 'wp_moment', 'vp_moment_SC', 'general_flag']
+        support_vars = SUPPORT_VARS
 
         if fit_seconds is not None:
             fit_steps = np.timedelta64(np.datetime64(tend, 'ns') - np.datetime64(tstart))/np.timedelta64(fit_seconds, 's')
@@ -300,19 +353,29 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange=None):
             # --- RUN NEW UNIFIED BAYESIAN PIPELINE (GROUPED) ---
             spc_anisotropy = calculate_spc_anisotropy(
                 init_ds, uncert_map, 
-                method='Bayesian_MCMC', 
+                method=METHOD, 
+                likelihood_type=likelihood_method,
                 threshold=min_flux, 
-                no_weights=no_weights, 
+                no_weights=no_weights,
+                weighted_fit=weighted_fit, 
                 groups=windows, 
+                flow_correct=flow_correction,
                 win_max=win_max, 
                 use_avg_bfield=avg_bfield,
-                plot_diagnostics=plot_diagnostics
+                plot_diagnostics=plot_diagnostics, 
+                pos_id=pos_id
             )
 
             # Group the support variables directly from the original init_ds using the same time bins
             support_binned = init_ds[support_vars].groupby_bins('epoch', fit_time).mean(skipna=True)
             support_binned = support_binned.assign_coords(epoch=('epoch_bins', midpoints))
             support_spc = support_binned.swap_dims({"epoch_bins":"epoch"}).drop_vars("epoch_bins").rename({'epoch': 'time'})
+
+            # There are a bunch of support variables that we need to drop.
+            labels_to_drop = [var for var in support_spc.variables if 'LABL' in var]
+            if labels_to_drop:
+                support_spc = support_spc.drop_vars(labels_to_drop)
+            
         else:
             # --- RUN NEW UNIFIED BAYESIAN PIPELINE (SINGLE EVENTS) ---
             spc_anisotropy = calculate_spc_anisotropy(
@@ -327,33 +390,21 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange=None):
             )
 
             support_spc = init_ds[support_vars].rename({'epoch' : 'time'})
-
+        
         spc_anisotropy = xr.merge([spc_anisotropy, pa_flag, support_spc])
 
-        # Build Filename
-        tags = []
-        if smooth_seconds:
-            if isinstance(smooth_seconds, int):
-                tags.append(f"{int(smooth_seconds)}s")
-            elif smooth_seconds % 1 != 0:
-                smooth_seconds_ms = int(smooth_seconds * 1000)
-                tags.append(f"{smooth_seconds_ms}ms")
+        spc_anisotropy = spc_anisotropy.rename({'time': 'Epoch'})
 
-        if fit_seconds:
-            tags.append(f"averaged_{fit_seconds}s")
-        if no_weights:
-            tags.append('nw')
-        if win_max:
-            tags.append('winmax')
+        spc_anisotropy['Epoch'].attrs.update({
+            'VAR_TYPE': 'support_data',
+            'FIELDNAM': 'Epoch',
+            'CATDESC': 'Time in TT2000',
+            'MONOTON': 'INCREASE',
+            'TIME_BASE': 'J2000'
+        })
 
-        tag_str = "_" + "_".join(tags) if tags else ""
-        output_dir = "./anisotropy_files"
-        os.makedirs(output_dir, exist_ok=True)
-
-        if avg_bfield:
-            filename = f"{output_dir}/SPC_Anisotropy_{date_str}_{spc_mode}_bavg_{tag_str}"
-        else:
-            filename = f"{output_dir}/SPC_Anisotropy_{date_str}_{spc_mode}{tag_str}_Map_log_with_bias" #Final_public_data"# NEW_3PFIT_Bayesian_3D"
+        # --- Generate Filename and Save ---
+        filename = generate_spc_filename(date_str, config_dict, method=METHOD)
 
         print(f"Saving to {filename}...")
         cdflib.xarray.xarray_to_cdf(spc_anisotropy, filename)

@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
 import cdflib.xarray 
 import xarray as xr
 import sys
@@ -33,20 +34,14 @@ def Partial_T_anisotropy(Txx, Tzz, b_vec):
 
     return(T_fa)
 
-
 file_str = '2023-12-27'
 
 year, month, day = file_str.split('-') 
 bimax = cdflib.xarray.cdf_to_xarray(f'./v00/{year}/{month}/spp_swp_spi_sf00_fits_{file_str}_v00.cdf', fillval_to_nan=True)
-# spc   = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{file_str}_peak_track_averaged_4s_Final.cdf', fillval_to_nan=True)
-spc   = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{file_str}_peak_track_averaged_4s_Map_log_with_bias.cdf', fillval_to_nan=True)
-# spc   = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{file_str}_peak_track_averaged_4s_NEW_3PFIT_Bayesian_clean.cdf', fillval_to_nan=True)
-# spc   = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{file_str}_peak_track_averaged_4s_NEW_3PFIT_Bayesian_5D.cdf', fillval_to_nan=True)
-# spc   = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/3PFIT/SPC_Anisotropy_{file_str}_peak_track_averaged_4s_NEW_3PFIT.cdf', fillval_to_nan=True)
-# spc   = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{file_str}_peak_track_averaged_4s_60s_field.cdf', fillval_to_nan=True)
-# spc = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/SPC_Anisotropy_{file_str}_peak_track_bavg__averaged_4s.cdf', fillval_to_nan=True)
+spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{file_str}_peak_track_Cauchy_fit4s_gflag.cdf', fillval_to_nan=True)
 span  = cdflib.xarray.cdf_to_xarray(f'./psp_data/sweap/spi/L3/spi_sf00/{year}/{month}/psp_swp_spi_sf00_L3_mom_{year}{month}{day}_v04.cdf')
 
+spc = spc.rename({'Epoch':'time'})
 span = span.drop('ROTMAT_SC_INST')
 
 # Set all fill_vals to be nans.
@@ -90,7 +85,11 @@ bimax['Temp_ani'] = xr.DataArray(T_bimax_fits, coords={'Epoch':bimax.Epoch.data}
 bimax_interp = bimax.interp(Epoch=spc.time.data)
 
 # Partial moment span-i temperature anisotropy.
-Tperp_span, Tpara_span = Partial_T_anisotropy(span_interp.T_TENSOR_INST.data[:,0], span_interp.T_TENSOR_INST.data[:,2], span_interp.MAGF_INST.data)
+# Tperp_span, Tpara_span = Partial_T_anisotropy(span_interp.T_TENSOR_INST.data[:,0], span_interp.T_TENSOR_INST.data[:,2], span_interp.MAGF_INST.data)
+# Tani_span = Tperp_span/Tpara_span
+T_fa = Partial_T_anisotropy(span_interp.T_TENSOR_INST.data[:,0], span_interp.T_TENSOR_INST.data[:,2], span_interp.MAGF_INST.data)
+Tperp_span, Tpara_span = T_fa
+
 Tani_span = Tperp_span/Tpara_span
 
 # Get the span-i flow angles
@@ -114,20 +113,23 @@ spc_mean_interp = spc.rolling(time=30, center=True, min_periods = 1).mean()#spc.
 span_mean_interp = span_interp.rolling(Epoch=30, center=True, min_periods=1).mean() #span_interp.resample(Epoch='1min').mean()
 bimax_mean_interp = bimax_interp.rolling(Epoch=30, center=True, min_periods=1).mean() #bimax_interp.resample(Epoch='1min').mean()
 
-Tperp_span_mean, Tpara_span_mean = Partial_T_anisotropy(span_mean_interp.T_TENSOR_INST.data[:,0], span_mean_interp.T_TENSOR_INST.data[:,2], span_mean_interp.MAGF_INST.data)
+T_fa_mean = Partial_T_anisotropy(span_mean_interp.T_TENSOR_INST.data[:,0], span_mean_interp.T_TENSOR_INST.data[:,2], span_mean_interp.MAGF_INST.data)
+Tperp_span_mean, Tpara_span_mean = T_fa_mean
+
 Tani_span_mean = Tperp_span_mean/Tpara_span_mean
 
 #### Begin our figure
-fig = plt.figure(figsize=(12, 8), layout='constrained')
+fig = plt.figure(figsize=(12, 10), layout='constrained')
 
 # Slightly reduced the top panel ratio just to give the angle panels breathing room
-gs = fig.add_gridspec(5, 1, height_ratios=[2.5, 1, 1, 1, 1], hspace=0.05)
+gs = fig.add_gridspec(6, 1, height_ratios=[2.5, 1, 1, 1, 1, 1], hspace=0.05)
 
 ax1 = fig.add_subplot(gs[0])
 ax2 = fig.add_subplot(gs[1], sharex=ax1)
 ax3 = fig.add_subplot(gs[2], sharex=ax1)
 ax4 = fig.add_subplot(gs[3], sharex=ax1)
 ax5 = fig.add_subplot(gs[4], sharex=ax1)
+ax6 = fig.add_subplot(gs[5], sharex=ax1)
 
 # Only the Anisotropy panel should be log scale!
 ax1.set_yscale('log')
@@ -135,27 +137,26 @@ ax1.set_ylim([0.1, 10])
 
 # Custom Colors
 # color1 = "#067FCF" # Teal (Partial Moments)
-color1 = "#05EAA9"
+color1 = "#0555EA"
 color2 = "#C87100FF" # Orange (Bi-Max Fits)
 color3 = "#8504D5FF"
 
-# ax1.plot(spc_time[two_fits_flag], spc_ani[two_fits_flag], color='k', linewidth=0.5, zorder=0, label='SPC Anisotropy')
 ax1.plot(spc_time, spc_ani, color='k', linewidth=0.5, zorder=0, label='SPC Anisotropy')
 ax1.fill_between(spc_time, spc_ani_lower, spc_ani_upper, 
                  color='tab:red', alpha=0.5, edgecolor='none', zorder=0, label='SPC Uncertainty')
 
 ax1.axhline(1.0, color='k', linestyle='--', linewidth=1, alpha=0.5, zorder=1)
 
-ax1.scatter(spc_time[angle_flag], Tani_span[angle_flag],
-            marker='o', color=color1, edgecolors='k', linewidths=0.4, s=15, alpha=0.4, zorder=2, label='SPAN-i Partial')
+ax1.scatter(span_interp.Epoch.data[angle_flag], Tani_span[angle_flag],
+            marker='o', color=color1, edgecolors='k', linewidths=0.4, s=10, alpha=0.4, zorder=2, label='SPAN-i Partial')
 
-ax1.scatter(spc_time[angle_flag], bimax_interp.Temp_ani.data[angle_flag], 
-            marker='v', color=color3, edgecolors='k', linewidths=0.4, s=15, alpha=0.4, zorder=2, label='SPAN-i Bi-Max')
+# ax1.scatter(spc_time[angle_flag], bimax_interp.Temp_ani.data[angle_flag], 
+#             marker='v', color=color3, edgecolors='k', linewidths=0.4, s=15, alpha=0.4, zorder=2, label='SPAN-i Bi-Max')
 
-ax1.set_xlim([spc_time[0], spc_time[0] + np.timedelta64(7, 'h')])
+ax1.set_xlim([spc_time[0] + np.timedelta64(1, 'h'), spc_time[0] + np.timedelta64(6, 'h')])
 
 # Add a clean legend inside the top panel
-leg1 = ax1.legend(loc='lower right', framealpha=0.9, edgecolor='lightgray', ncol=2)
+leg1 = ax1.legend(loc='upper right', framealpha=0.9, edgecolor='lightgray', ncol=2)
 
 # for handle in leg1.legend_handles:
 #     handle.set_linewidth(3.0)
@@ -190,16 +191,47 @@ ax4.plot(spc_time[0:6778], el[0:6778], color=color1, linewidth=0.5, alpha=0.5)
 
 ax5.plot(spc_time, spc.peak_azimuth.data, color='k', linewidth=0.5)
 ax5.plot(spc_time[0:6778], az[0:6778], color=color1, linewidth=0.5, alpha=0.5)
+ax5.axhline(-5.625, color=color3, linestyle='dashed')
+
+# 1. Extract the raw arrays
+time_data = span.Epoch.data
+phi_data = span.PHI_VALS.data - 180  # Update this if your phi variable is named differently
+eflux_data = span.EFLUX_VS_PHI.data
+
+# 2. Broadcast the 1D time array to match the 2D shape of phi and eflux
+# time_data[:, None] turns shape (T,) into (T, 1)
+# np.broadcast_to expands it to (T, P) without duplicating memory
+time_2d = np.broadcast_to(time_data[:, None], eflux_data.shape)
+
+# 3. Create the 2D plot
+# We use LogNorm because space plasma fluxes usually span multiple orders of magnitude.
+# shading='nearest' or 'auto' keeps the grid clean when working with dynamic 2D coordinates.
+im = ax6.pcolormesh(
+    time_2d, 
+    phi_data, 
+    eflux_data, 
+    cmap='Spectral_r',    # 'Spectral_r', 'viridis', or 'plasma' are standard for flux
+    norm=colors.LogNorm(), # Automatically scales the colormap logarithmically
+    shading='auto'
+)
+
+# 4. Attach a colorbar to the specific axis
+cbar = plt.colorbar(im, ax=ax6, pad=0.02)
+cbar.set_label('Energy Flux')
+
+# 5. Format the axis labels
+ax6.set_ylabel('Phi Angle [deg]')
 
 # Clean up axes: Hide X-tick labels for the top 3 panels
 ax1.tick_params(labelbottom=False)
 ax2.tick_params(labelbottom=False)
 ax3.tick_params(labelbottom=False)
 ax4.tick_params(labelbottom=False)
+ax5.tick_params(labelbottom=False)
 
 # Optional: Add y-labels just to be safe
 ax1.set_ylabel(r'$T_{\perp} / T_{\parallel}$', fontsize=16)
-ax2.set_ylabel(r'($\phi_{B},\theta_{B}$) [$^{o}$]', fontsize=16)
+ax2.set_ylabel(r'($\phi_{B},\theta_{B}$) [$^\circ$]', fontsize=16)
 ax3.set_ylabel(r'$v_{r}$ [km/s]', fontsize=16)
 ax4.set_ylabel(r'$\theta$ [$^\circ$]', fontsize=16)
 ax5.set_ylabel(r'$\phi$ [$^\circ$]', fontsize=16)
@@ -216,11 +248,11 @@ ax4.grid(True, which='minor', color='gray', alpha=0.1, linestyle='-')
 
 
 ax1.set_title(f'Temperature Anisotropy Comparision | {file_str}', fontsize=20)
-ax5.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-ax5.set_xlabel(r'Time [UTC] on 2023-12-27', fontsize=12)
+ax6.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+ax6.set_xlabel(r'Time [UTC] on 2023-12-27', fontsize=12)
 
-axes = [ax1, ax2, ax3, ax4, ax5]
-labels = ['(a)', '(b)', '(c)', '(d)', '(e)']
+axes = [ax1, ax2, ax3, ax4, ax5, ax6]
+labels = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)']
 
 for ax, label in zip(axes, labels):
     # Place the text at x=0.01 (1% from the left) and y=0.95 (5% from the top)
