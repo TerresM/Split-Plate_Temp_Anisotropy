@@ -177,365 +177,6 @@ def _calculate_empirical_guess(vzb, v_trans, var_array, bz):
     
     return emp_alpha, slope, intercept, sum_W
 
-"""### Define the 5d functions that we will be using. 
-@njit(fastmath=True, cache=True, nogil=True)
-def log_likelihood_hierarchical_5d(theta, vzbx, vx, vzby, vy, bz, var_x_array, var_y_array):
-    log_alpha_true, log_alpha_eff_x, log_alpha_eff_y, gamma_int_x, gamma_int_y = theta
-
-    alpha_eff_x = 10**(log_alpha_eff_x)
-    alpha_eff_y = 10**(log_alpha_eff_y)
-
-    # Map Proposed Anisotropy to Physical Slopes (M)
-    M_x = ((1.0 - alpha_eff_x) * bz) / (1.0 - (1.0 - alpha_eff_x) * (1.0 - bz**2))
-    M_y = ((1.0 - alpha_eff_y) * bz) / (1.0 - (1.0 - alpha_eff_y) * (1.0 - bz**2))
-    
-    # Build the Theoretical Model using the dynamically sampled gamma as the intercept
-    mu_x = M_x * vzbx + gamma_int_x
-    mu_y = M_y * vzby + gamma_int_y
-    
-    # Calculate the Gaussian Log-Likelihood Penalty
-    # L_x = np.sum(((vx - mu_x)**2 / var_x_array) + 1.837877 + np.log(var_x_array))
-    # L_y = np.sum(((vy - mu_y)**2 / var_y_array) + 1.837877 + np.log(var_y_array))
-    chi_sq_x = ((vx - mu_x)**2) / var_x_array
-    chi_sq_y = ((vy - mu_y)**2) / var_y_array
-
-    L_x = np.sum(2.0 * np.log(1.0 + 0.5 * chi_sq_x) + np.log(var_x_array))
-    L_y = np.sum(2.0 * np.log(1.0 + 0.5 * chi_sq_y) + np.log(var_y_array))
-    return -0.5 * (L_x + L_y)
-
-@njit(cache=True, nogil=True)
-def log_prior_hierarchical_5d(theta, ani_list, dp_slice_x, dm_slice_x, bias_slice_x,
-                                               dp_slice_y, dm_slice_y, bias_slice_y):
-    log_alpha_true, log_alpha_eff_x, log_alpha_eff_y, gamma_int_x, gamma_int_y = theta
-
-    # The hard brick walls for anisotropy (log space limits)
-    if not (-2.0 < log_alpha_true  < 2.0): return -np.inf
-    if not (-2.0 < log_alpha_eff_x < 2.0): return -np.inf
-    if not (-2.0 < log_alpha_eff_y < 2.0): return -np.inf
-    
-    # Uninformative boundaries for the intrinsic velocity fluctuation offset (km/s)
-    if not (-5000.0 < gamma_int_x < 5000.0): return -np.inf
-    if not (-5000.0 < gamma_int_y < 5000.0): return -np.inf
-
-    sigma_gamma = 1000.0
-    log_P_gamma_x = -0.5 * (gamma_int_x / sigma_gamma)**2
-    log_P_gamma_y = -0.5 * (gamma_int_y / sigma_gamma)**2
-
-    log_ani_list = np.log10(ani_list)
-    
-    log_eff_x_lookup = max(min(log_alpha_eff_x, log_ani_list[-1]), log_ani_list[0])
-    log_eff_y_lookup = max(min(log_alpha_eff_y, log_ani_list[-1]), log_ani_list[0])
-
-    valid_x = np.isfinite(dp_slice_x) & np.isfinite(dm_slice_x) & np.isfinite(bias_slice_x)
-
-    if np.sum(valid_x) < 2:
-        log_P_eff_x = 0.0
-    else:
-        log_dp_x = np.interp(log_eff_x_lookup, log_ani_list[valid_x], dp_slice_x[valid_x])
-        log_dm_x = np.interp(log_eff_x_lookup, log_ani_list[valid_x], dm_slice_x[valid_x])
-        log_bias_x = np.interp(log_eff_x_lookup, log_ani_list[valid_x], bias_slice_x[valid_x])
-
-        expected_x = log_alpha_true + log_bias_x
-
-        sig_x = log_dp_x if log_alpha_eff_x > expected_x else log_dm_x
-        sig_x = max(sig_x, 1e-3)
-        log_P_eff_x = -np.log(log_dp_x + log_dm_x) - 0.5 * ((log_alpha_eff_x - expected_x) / sig_x)**2
-
-    ### Calculate the log prior for Y
-    valid_y = np.isfinite(dp_slice_y) & np.isfinite(dm_slice_y) & np.isfinite(bias_slice_y)
-
-    if np.sum(valid_y) < 2:
-        log_P_eff_y = 0.0
-    else:
-        log_dp_y = np.interp(log_eff_y_lookup, log_ani_list[valid_y], dp_slice_y[valid_y])
-        log_dm_y = np.interp(log_eff_y_lookup, log_ani_list[valid_y], dm_slice_y[valid_y])
-        log_bias_y = np.interp(log_eff_y_lookup, log_ani_list[valid_y], bias_slice_y[valid_y])
-        
-        expected_y = log_alpha_true + log_bias_y
-        
-        sig_y = log_dp_y if log_alpha_eff_y > expected_y else log_dm_y
-        sig_y = max(sig_y, 1e-3)
-        log_P_eff_y = -np.log(log_dp_y + log_dm_y) - 0.5 * ((log_alpha_eff_y - expected_y) / sig_y)**2
-        
-    # --- THE PHYSICAL INFORMATIVE PRIOR ---
-    log_P_physical = 0.0
-    penalty_steepness = 0.05  
-    
-    if log_alpha_true > 1.0:
-        log_P_physical = -0.5 * ((log_alpha_true - 1.0) / penalty_steepness)**2
-    elif log_alpha_true < -1.0:
-        log_P_physical = -0.5 * ((log_alpha_true - (-1.0)) / penalty_steepness)**2
-        
-    return log_P_eff_x + log_P_eff_y + log_P_gamma_x + log_P_gamma_y
-
-@njit(cache=True, nogil=True)
-def log_probability_hierarchical_5d(theta, vzbx, vx, vzby, vy, bz, ani_list, 
-                                    dp_slice_x, dm_slice_x, bias_slice_x,
-                                    dp_slice_y, dm_slice_y, bias_slice_y,
-                                    var_x_array, var_y_array):
-    lp = log_prior_hierarchical_5d(theta, ani_list, dp_slice_x, dm_slice_x, bias_slice_x,
-                                                          dp_slice_y, dm_slice_y, bias_slice_y)
-    if not np.isfinite(lp):
-        return -np.inf
-    
-    ll = log_likelihood_hierarchical_5d(theta, vzbx, vx, vzby, vy, bz, var_x_array, var_y_array)
-
-    if np.isnan(ll):
-        return -np.inf
-
-    return lp + ll
-
-def run_emcee_hierarchical_5d(vzbx, vx, vzby, vy, bz, uncert_map, 
-                              xangle, yangle, var_x_array, var_y_array, 
-                              likelihood_type='Gauss'):
-
-    use_cauchy = True if likelihood_type.lower() == 'cauchy' else False
-    
-    # 1. Calculate Initial Alpha Guesses
-    emp_alpha_x, slope_x, intercept_x, weight_x = _calculate_empirical_guess(vzbx, vx, var_x_array, bz)
-    emp_alpha_y, slope_y, intercept_y, weight_y = _calculate_empirical_guess(vzby, vy, var_y_array, bz)
-
-    alphas = np.array([emp_alpha_x, emp_alpha_y])
-    weights = np.array([weight_x, weight_y])
-    valid = np.isfinite(alphas) & (alphas > 0) & (weights > 0)
-    
-    if np.any(valid):
-        emp_alpha = np.average(alphas[valid], weights=weights[valid])
-    else:
-        emp_alpha = 1.0
-
-    emp_alpha = np.clip(emp_alpha, 0.15, 9.85)
-    log_emp_alpha = np.log10(emp_alpha)
-    
-    # Set the Initial Gamma (Intercept) Guesses from the empricial guess
-    gamma_guess_x = 0.0 #intercept_x
-    gamma_guess_y = 0.0 #intercept_y
-
-    # 3. Handle Uncertainty Map Lookup
-    try:
-        angle_list, ani_list, dp_map, dm_map, bias_map = uncert_map
-    except ValueError:
-        angle_list, ani_list, dp_map, dm_map = uncert_map
-        bias_map = np.zeros_like(dp_map)
-
-    idx_x = np.nanargmin(np.abs(np.abs(xangle) - angle_list))
-    idx_y = np.nanargmin(np.abs(np.abs(yangle) - angle_list))
-
-    dp_slice_x, dm_slice_x, bias_slice_x = dp_map[:, idx_x], dm_map[:, idx_x], bias_map[:, idx_x]
-    dp_slice_y, dm_slice_y, bias_slice_y = dp_map[:, idx_y], dm_map[:, idx_y], bias_map[:, idx_y]
-
-    # 4. Initialize the 5D Walkers
-    nwalkers = 16
-    ndim = 5        
-
-    log_pos_alpha_true  = log_emp_alpha + 1e-4 * np.random.randn(nwalkers)
-    log_pos_alpha_eff_x = log_emp_alpha + 1e-4 * np.random.randn(nwalkers)
-    log_pos_alpha_eff_y = log_emp_alpha + 1e-4 * np.random.randn(nwalkers)
-    
-    # Seed gamma walkers near the analytical guess with 1.0 km/s of variance
-    pos_gamma_x = gamma_guess_x + 0.1 * np.random.randn(nwalkers)
-    pos_gamma_y = gamma_guess_y + 0.1 * np.random.randn(nwalkers)
-
-    pos = np.vstack((log_pos_alpha_true, log_pos_alpha_eff_x, log_pos_alpha_eff_y, 
-                     pos_gamma_x, pos_gamma_y)).T
-    
-    # 5. Run the MCMC
-    sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability_hierarchical_5d,
-                                    args = (vzbx, vx, vzby, vy, bz, ani_list, 
-                                    dp_slice_x, dm_slice_x, bias_slice_x, 
-                                    dp_slice_y, dm_slice_y, bias_slice_y, 
-                                    var_x_array, var_y_array)
-            )
-
-    sampler.run_mcmc(pos, 300, progress=False)
-
-    log_samples = sampler.get_chain(discard=50, flat=True)
-    samples = np.copy(log_samples)
-    samples[:, 0:3] = 10**(log_samples[:, 0:3])
-
-    samples_true = samples[:,0]
-    samples_eff_x = samples[:,1]
-    samples_eff_y = samples[:,2]
-
-    samples_gamma_x = samples[:,3]
-    samples_gamma_y = samples[:,4]
-
-    alpha_16, alpha_50, alpha_84 = np.percentile(samples_true, [16, 50, 84])
-    alpha_eff_x_16, alpha_eff_x_50, alpha_eff_x_84 = np.percentile(samples_eff_x, [16, 50, 84])
-    alpha_eff_y_16, alpha_eff_y_50, alpha_eff_y_84 = np.percentile(samples_eff_y, [16, 50, 84])
-
-    gamma_eff_x_16, gamma_eff_x_50, gamma_eff_x_84 = np.percentile(samples_gamma_x, [16, 50, 84])
-    gamma_eff_y_16, gamma_eff_y_50, gamma_eff_y_84 = np.percentile(samples_gamma_y, [16, 50, 84])
-
-    sig_minus = alpha_50 - alpha_16
-    sig_plus = alpha_84 - alpha_50
-
-    sig_x_minus = alpha_eff_x_50 - alpha_eff_x_16
-    sig_x_plus  = alpha_eff_x_84 - alpha_eff_x_50
-
-    sig_y_minus = alpha_eff_y_50 - alpha_eff_y_16
-    sig_y_plus  = alpha_eff_y_84 - alpha_eff_y_50
-
-    res_bundle = {
-        'alpha'           : alpha_50,
-        'sig_plus'        : sig_plus,
-        'sig_minus'       : sig_minus,
-        'alpha_eff_x'     : alpha_eff_x_50,
-        'sig_plus_x'      : sig_x_plus,
-        'sig_minus_x'     : sig_x_minus,
-        'alpha_eff_y'     : alpha_eff_y_50,
-        'sig_plus_y'      : sig_y_plus,
-        'sig_minus_y'     : sig_y_minus,
-        'gamma_x'         : gamma_eff_x_50,
-        'sig_plus_gam_x'  : gamma_eff_x_84 - gamma_eff_x_50,
-        'sig_minus_gam_x' : gamma_eff_x_50 - gamma_eff_x_16,
-        'gamma_y'         : gamma_eff_y_50,
-        'sig_plus_gam_y'  : gamma_eff_y_84 - gamma_eff_y_50,
-        'sig_minus_gam_y' : gamma_eff_y_50 - gamma_eff_y_16,
-        'samples'         : samples 
-    }
-
-    return res_bundle
-
-def _run_bayesian_pipeline_5d(block, valid_idx, vzbx_fit, vx_fit, 
-                              vzby_fit, vy_fit, vz_var, block_nvec_avg,
-                              uncertainty_map, xangle, yangle, static_length):
-
-    sig_I = 1.0 
-    lamda = 1.009       
-    C = lamda/2.0
-
-    # Grab in the plate currents that will be used for defining the plate differences
-    ia_fit = block.ia_curr.values[valid_idx]
-    ib_fit = block.ib_curr.values[valid_idx]
-    ic_fit = block.ic_curr.values[valid_idx]
-    id_fit = block.id_curr.values[valid_idx]
-
-    i_tot = np.maximum(ia_fit + ib_fit + ic_fit + id_fit, 1e-6)     
-    i_diff_x = (ia_fit + id_fit) - (ib_fit + ic_fit)
-    i_diff_y = (ic_fit + id_fit) - (ia_fit + ib_fit)
-
-    vz_fit = block.vz.values[valid_idx] 
-    vz_fit_abs = np.abs(vz_fit)
-
-    theta_x_rad = np.arctan(vx_fit / vz_fit_abs)    
-    theta_y_rad = np.arctan(vy_fit / vz_fit_abs)
-
-    cov_x = np.cov(vzbx_fit, vx_fit)    
-    emp_slope_x = cov_x[0, 1] / max(cov_x[0, 0], 1e-6)
-    cov_y = np.cov(vzby_fit, vy_fit)
-    emp_slope_y = cov_y[0, 1] / max(cov_y[0, 0], 1e-6)
-
-    nx, ny = block_nvec_avg[0], block_nvec_avg[1]   
-
-    deriv_x = (vx_fit / vz_fit) - (emp_slope_x * nx)
-    deriv_y = (vy_fit / vz_fit) - (emp_slope_y * ny)
-
-    term1_x = vz_var * (deriv_x**2)
-    term1_y = vz_var * (deriv_y**2)
-    
-    geom_mod_x = 1.0 / (np.cos(theta_x_rad)**4)
-    geom_mod_y = 1.0 / (np.cos(theta_y_rad)**4)
-
-    # sig_I_new_sq = sig_I**2 + 0.7 * i_tot
-    # sig_I_new = np.sqrt(sig_I_new_sq)
-
-    prefix = ((sig_I**2) * (vz_fit_abs**2) * (C**2)) / (i_tot**2)
-
-    term2_x = prefix * geom_mod_x * (1.0 + (i_diff_x / i_tot)**2)
-    term2_y = prefix * geom_mod_y * (1.0 + (i_diff_y / i_tot)**2)
-
-    var_x_array = np.maximum(term1_x + term2_x, 1e-4)
-    var_y_array = np.maximum(term1_y + term2_y, 1e-4)
-
-    # --- CALL THE NEW 5D RUNNER ---
-    res_bundle = run_emcee_hierarchical_5d(
-        vzbx_fit, vx_fit, vzby_fit, vy_fit, block_nvec_avg[2], 
-        uncertainty_map, xangle, yangle, var_x_array, var_y_array
-    )
-
-    avg_alpha = get_data(res_bundle, 'alpha')
-    avg_sig_plus = get_data(res_bundle, 'sig_plus')
-    avg_sig_minus = get_data(res_bundle, 'sig_minus')
-
-    alpha_eff_x  = get_data(res_bundle, 'alpha_eff_x')
-    sig_plus_x   = get_data(res_bundle, 'sig_plus_x')
-    sig_minus_x  = get_data(res_bundle, 'sig_plus_x')
-
-    alpha_eff_y = get_data(res_bundle, 'alpha_eff_y')
-    sig_plus_y   = get_data(res_bundle, 'sig_plus_y')
-    sig_minus_y  = get_data(res_bundle, 'sig_plus_y')
-
-    gamma_x = get_data(res_bundle, 'gamma_x')
-    sig_plus_gam_x = get_data(res_bundle, 'sig_plus_gam_x' )
-    sig_minus_gam_x = get_data(res_bundle, 'sig_minus_gam_x')
-
-    gamma_y = get_data(res_bundle, 'gamma_y')
-    sig_plus_gam_y  = get_data(res_bundle, 'sig_plus_gam_y' )
-    sig_minus_gam_y = get_data(res_bundle, 'sig_minus_gam_y')
-
-    samples = get_data(res_bundle, 'samples')
-
-    bz = block_nvec_avg[2]
-    
-    # Get the effective x and y fits.
-    m_x = ((1.0 - avg_alpha) * bz) / (1.0 - (1.0 - avg_alpha) * (1.0 - bz**2))
-    m_y = ((1.0 - avg_alpha) * bz) / (1.0 - (1.0 - avg_alpha) * (1.0 - bz**2))
-
-    m_eff_x = ((1.0 - alpha_eff_x) * bz) / (1.0 - (1.0 - alpha_eff_x) * (1.0 - bz**2))
-    m_eff_y = ((1.0 - alpha_eff_y) * bz) / (1.0 - (1.0 - alpha_eff_y) * (1.0 - bz**2))
-    
-    sq_res_x_valid = ((vx_fit - (m_x * vzbx_fit + gamma_x))**2)/ var_x_array
-    sq_res_y_valid = ((vy_fit - (m_y * vzby_fit + gamma_y))**2)/ var_y_array
-
-    sq_res_eff_x_valid = ((vx_fit - (m_eff_x * vzbx_fit + gamma_x))**2)/ var_x_array
-    sq_res_eff_y_valid = ((vy_fit - (m_eff_y * vzby_fit + gamma_y))**2)/ var_y_array
-
-    dof_single = max(len(vzbx_fit) - 2.0, 1.0)
-    dof_joint = max((2.0 * len(vzbx_fit)) - 3.0, 1.0)
-
-    chi_sq_x = np.sum(sq_res_x_valid) / dof_single
-    chi_sq_y = np.sum(sq_res_y_valid) / dof_single
-    chi_sq_joint = (np.sum(sq_res_x_valid) + np.sum(sq_res_y_valid)) / dof_joint
-
-    chi_sq_eff_x = np.sum(sq_res_eff_x_valid) / dof_single
-    chi_sq_eff_y = np.sum(sq_res_eff_y_valid) / dof_single
-
-    # Create an emply 2D array shaped exactly like the input block (time, dim)
-    block_shape = valid_idx.shape
-    block_res_x = np.full(block_shape, np.nan)
-    block_res_y = np.full(block_shape, np.nan)
-    # Map the 1D valid residuals back into their exact physical velocity bins
-    block_res_x[valid_idx] = sq_res_x_valid
-    block_res_y[valid_idx] = sq_res_y_valid 
-
-    update_dict = {
-        "T_ani_avg": avg_alpha,
-        "T_ani_avg_delta_plus": avg_sig_plus,
-        "T_ani_avg_delta_minus": avg_sig_minus,
-        "T_ani_chi" : alpha_eff_x,
-        "T_ani_chi_delta_plus" : sig_plus_x,
-        "T_ani_chi_delta_minus" : sig_minus_x,
-        "T_ani_psi" : alpha_eff_y,
-        "T_ani_psi_delta_plus" : sig_plus_y,
-        "T_ani_psi_delta_minus" : sig_minus_y,
-        "gamma_chi" : gamma_x,
-        "gamma_chi_delta_plus" : sig_plus_gam_x,
-        "gamma_chi_delta_minus" : sig_minus_gam_x,
-        "gamma_psi" : gamma_y,
-        "gamma_chi_delta_plus" : sig_plus_gam_y,
-        "gamma_chi_delta_minus" : sig_minus_gam_y,
-        "chi_sq_joint": chi_sq_joint,
-        "chi_sq_chi": chi_sq_x,
-        "chi_sq_psi": chi_sq_y,
-        "chi_sq_eff_x": chi_sq_eff_x,
-        "chi_sq_eff_y": chi_sq_eff_y,
-    }
-
-    # We also return samples and var arrays so the main loop can handle plotting!
-    return update_dict, samples, var_x_array, var_y_array
-
-"""
 ### Define the 5D Non-Centered Parameterization (NCP) method.
 # Theoretically what we are doing is we sample an alpha_*.
 # Then, we argue that alpha_eff_k = (alpha_* + bias(alpha_*) + eta_k * sig_k(alpha_*).
@@ -580,80 +221,12 @@ def log_prior_hierarchical_5d_ncp(theta):
     log_prior = log_P_eta_x + log_P_eta_y + log_P_gamma_x + log_P_gamma_y + log_P_physical
 
     return log_prior
-"""
-@njit(fastmath=True, cache=True, nogil=True)
-def log_likelihood_hierarchical_5d_ncp(theta, vzbx, vx, vzby, vy, bz, var_x_array, var_y_array,
-                                       ani_list, dp_slice_x, dm_slice_x, bias_slice_x, 
-                                       dp_slice_y, dm_slice_y, bias_slice_y):
-    # Load in the values that define our parameter space. 
-    log_alpha_true, eta_x, eta_y, gamma_int_x, gamma_int_y = theta
 
-    log_ani_list = np.log10(ani_list)
-    # Make sure the lookup value is in the defined range!
-    log_true_lookup = max(min(log_alpha_true, log_ani_list[-1]), log_ani_list[0])
-
-    # Here we need to deterministically calculate the effective x and y values!
-    valid_x = np.isfinite(dp_slice_x) & np.isfinite(dm_slice_x) & np.isfinite(bias_slice_x)
-    if np.sum(valid_x) < 2:
-        log_alpha_eff_x = log_alpha_true    # safe fallback
-    else:
-        log_dp_x = np.interp(log_true_lookup, log_ani_list[valid_x], dp_slice_x[valid_x])
-        log_dm_x = np.interp(log_true_lookup, log_ani_list[valid_x], dm_slice_x[valid_x])
-        log_bias_x = np.interp(log_true_lookup, log_ani_list[valid_x], bias_slice_x[valid_x])
-
-        expected_x = log_alpha_true + log_bias_x
-        sig_x = log_dp_x if eta_x > 0 else log_dm_x     # This is where we get the stretching factor from!
-        sig_x = max(sig_x, 0.001)       # set a minimum threshold for the variance!
-
-        # The NCP equation
-        log_alpha_eff_x = expected_x + (eta_x * sig_x)
-
-    # Doing the same for y!
-    valid_y = np.isfinite(dp_slice_y) & np.isfinite(dm_slice_y) & np.isfinite(bias_slice_y)
-    if np.sum(valid_y) < 2:
-        log_alpha_eff_y = log_alpha_true
-    else:
-        log_dp_y = np.interp(log_true_lookup, log_ani_list[valid_y], dp_slice_y[valid_y])
-        log_dm_y = np.interp(log_true_lookup, log_ani_list[valid_y], dm_slice_y[valid_y])
-        log_bias_y = np.interp(log_true_lookup, log_ani_list[valid_y], bias_slice_y[valid_y])
-
-        expected_y = log_alpha_true + log_bias_y
-        sig_y = log_dp_y if eta_y > 0 else log_dm_y
-        sig_y = max(sig_y, 0.001)
-
-        # The NCP equation
-        log_alpha_eff_y = expected_y + (eta_y * sig_y)
-
-    log_alpha_eff_x = max(min(log_alpha_eff_x, 5.0), -5.0)
-    log_alpha_eff_y = max(min(log_alpha_eff_y, 5.0), -5.0)
-
-    # Evaluate the likelihood!
-    alpha_eff_x = 10**(log_alpha_eff_x)
-    alpha_eff_y = 10**(log_alpha_eff_y)
-
-    # Define the slopes for the linear function.
-    denom_x = ((bz**2) + alpha_eff_x * (1.0 - bz**2))
-    denom_y = ((bz**2) + alpha_eff_y * (1.0 - bz**2))
-
-    denom_x = max(denom_x, 1e-30)
-    denom_y = max(denom_y, 1e-30)
-
-    M_x = ((1.0 - alpha_eff_x) * bz) / denom_x  #(1.0 - (1.0 - alpha_eff_x) * (1.0 - bz**2))
-    M_y = ((1.0 - alpha_eff_y) * bz) / denom_y #(1.0 - (1.0 - alpha_eff_y) * (1.0 - bz**2))
-    
-    mu_x = M_x * vzbx + gamma_int_x
-    mu_y = M_y * vzby + gamma_int_y
-    
-    L_x = np.sum(((vx - mu_x)**2 / var_x_array) + np.log(var_x_array))  # removed the ln(2pi) term!
-    L_y = np.sum(((vy - mu_y)**2 / var_y_array) + np.log(var_y_array))
-
-    return -0.5 * (L_x + L_y)
-"""
 @njit(fastmath=True, cache=True, nogil=True)
 def log_likelihood_hierarchical_5d_ncp(theta, vzbx, vx, vzby, vy, bz, var_x_array, var_y_array,
                                        ani_list, dp_slice_x, dm_slice_x, bias_slice_x, 
                                        dp_slice_y, dm_slice_y, bias_slice_y, 
-                                       use_cauchy):
+                                       use_t, use_gmm, weights_x, weights_y):
     # Load in the values that define our parameter space. 
     log_alpha_true, eta_x, eta_y, gamma_int_x, gamma_int_y = theta
     log_ani_list = np.log10(ani_list)
@@ -716,9 +289,23 @@ def log_likelihood_hierarchical_5d_ncp(theta, vzbx, vx, vzby, vy, bz, var_x_arra
     chi_sq_x = ((vx - mu_x)**2) / var_x_array
     chi_sq_y = ((vy - mu_y)**2) / var_y_array
 
-    if use_cauchy:
-        L_x = np.sum(np.log(1.0 + 0.5 * chi_sq_x) + 0.5 * np.log(var_x_array))
-        L_y = np.sum(np.log(1.0 + 0.5 * chi_sq_y) + 0.5 * np.log(var_y_array))
+    if use_gmm:
+        kappa_sq = 100.0
+        kappa = 10.0
+
+        eta_mix_x = 1.0 - weights_x
+        p1_x = (1.0 - eta_mix_x) * np.exp(-0.5 * chi_sq_x) / np.sqrt(var_x_array)
+        p2_x = eta_mix_x * np.exp(-0.5 * chi_sq_x / kappa_sq) / (kappa * np.sqrt(var_x_array))
+        L_x = -np.sum(np.log(p1_x + p2_x + 1e-30))   # Add a small buffer if values are zeros
+
+        eta_mix_y = 1.0 - weights_y
+        p1_y = (1.0 - eta_mix_y) * np.exp(-0.5 * chi_sq_y) / np.sqrt(var_y_array)
+        p2_y = eta_mix_y * np.exp(-0.5 * chi_sq_y / kappa_sq) / (kappa * np.sqrt(var_y_array))
+        L_y = -np.sum(np.log(p1_y + p2_y + 1e-30))
+    elif use_t:
+        # Student-t likelihood with nu = 4
+        L_x = np.sum(2.5 * np.log(1.0 + chi_sq_x / 4.0) + 0.5 * np.log(var_x_array))
+        L_y = np.sum(2.5 * np.log(1.0 + chi_sq_y / 4.0) + 0.5 * np.log(var_y_array))
     else:
         L_x = 0.5 * np.sum(chi_sq_x + np.log(var_x_array))  
         L_y = 0.5 * np.sum(chi_sq_y + np.log(var_y_array))
@@ -729,7 +316,8 @@ def log_likelihood_hierarchical_5d_ncp(theta, vzbx, vx, vzby, vy, bz, var_x_arra
 def log_probability_hierarchical_5d_ncp(theta, vzbx, vx, vzby, vy, bz, ani_list, 
                                         dp_slice_x, dm_slice_x, bias_slice_x,
                                         dp_slice_y, dm_slice_y, bias_slice_y,
-                                        var_x_array, var_y_array, use_cauchy):
+                                        var_x_array, var_y_array, use_t, use_gmm,
+                                        weights_x, weights_y):
     # Evaluate the log prior
     lp = log_prior_hierarchical_5d_ncp(theta)
 
@@ -742,7 +330,7 @@ def log_probability_hierarchical_5d_ncp(theta, vzbx, vx, vzby, vy, bz, ani_list,
                                             var_x_array, var_y_array, ani_list, 
                                             dp_slice_x, dm_slice_x, bias_slice_x,
                                             dp_slice_y, dm_slice_y, bias_slice_y,
-                                            use_cauchy)
+                                            use_t, use_gmm, weights_x, weights_y)
     
     # Quick check to make sure the log likelihood is finite
     if not np.isfinite(ll):
@@ -777,14 +365,22 @@ def reconstruct_effective_chain(log_true_chain, eta_chain, log_true_lookup, log_
 
 def run_emcee_hierarchical_5d_ncp(vzbx, vx, vzby, vy, bz, uncert_map, 
                                   xangle, yangle, var_x_array, var_y_array, 
-                                  likelihood_type = "Gauss"):
-    use_cauchy = True if likelihood_type.lower() == "cauchy" else False
+                                  likelihood_type = "Gauss", 
+                                  mix_weights = None):
+    use_t = True if likelihood_type.lower() == "t" else False
+    use_gmm = True if likelihood_type.lower() == "gmm" else False
+
+    if use_gmm and mix_weights is None:
+        raise ValueError("Weights must be provided when using the GMM likelihood method.")
 
     mask_x = np.isfinite(vzbx) & np.isfinite(vx) & np.isfinite(var_x_array)
     vzbx, vx, var_x_array = vzbx[mask_x], vx[mask_x], var_x_array[mask_x]
     
     mask_y = np.isfinite(vzby) & np.isfinite(vy) & np.isfinite(var_y_array)
     vzby, vy, var_y_array = vzby[mask_y], vy[mask_y], var_y_array[mask_y]
+
+    mix_weights_x = mix_weights[mask_x] if mix_weights is not None else np.zeros_like(var_x_array)
+    mix_weights_y = mix_weights[mask_y] if mix_weights is not None else np.zeros_like(var_y_array)
 
     if len(vzbx) < 2 or len(vzby) < 2:
         raise ValueError("Not enough finite data points to run 5D MCMC.")
@@ -860,8 +456,8 @@ def run_emcee_hierarchical_5d_ncp(vzbx, vx, vzby, vy, bz, uncert_map,
                                         args = (vzbx, vx, vzby, vy, bz, ani_list, 
                                         dp_slice_x, dm_slice_x, bias_slice_x, 
                                         dp_slice_y, dm_slice_y, bias_slice_y, 
-                                        var_x_array, var_y_array, 
-                                        use_cauchy) # Choose which likelihood to use!
+                                        var_x_array, var_y_array, use_t, use_gmm, 
+                                        mix_weights_x, mix_weights_y) 
                 )
 
         sampler.run_mcmc(pos, 400, progress=False)
@@ -1012,11 +608,13 @@ def _run_bayesian_pipeline_5d_ncp(block, valid_idx, vzbx_fit, vx_fit,
     var_x_array = var_x_array_inst / safe_weights
     var_y_array = var_y_array_inst / safe_weights
 
+    weights_rdf = block.weights_rdf.values[valid_idx]
+
     # Call the NCP EMCEE sampler
     res_bundle = run_emcee_hierarchical_5d_ncp(
         vzbx_fit, vx_fit, vzby_fit, vy_fit, block_nvec_avg[2], 
         uncertainty_map, xangle, yangle, var_x_array, var_y_array, 
-        likelihood_type
+        likelihood_type, mix_weights=weights_rdf
     )
 
     # --- FIXED COPY-PASTE BUGS HERE ---
@@ -1133,7 +731,7 @@ def log_prior_hierarchical_3d_ncp(theta):
 @njit(fastmath=True, cache=True, nogil=True)
 def log_likelihood_hierarchical_3d_ncp(theta, vzb, v_trans, bz, var_array,
                                        ani_list, dp_slice, dm_slice, bias_slice,
-                                       use_cauchy):
+                                       use_t, use_gmm, weights):
     log_alpha_true, eta, gamma_int = theta
     log_ani_list = np.log10(ani_list)
 
@@ -1166,8 +764,17 @@ def log_likelihood_hierarchical_3d_ncp(theta, vzb, v_trans, bz, var_array,
     
     # NOTE: You mentioned adding a Cauchy likelihood. If you pass a boolean flag 
     # to this function, you can toggle between Gaussian (below) or Cauchy here!
-    if use_cauchy:
-        L = np.sum(np.log(1.0 + 0.5 * chi_sq) + 0.5 * np.log(var_array))
+    if use_gmm:
+        kappa_sq = 100.0
+        kappa = 10.0
+
+        eta_mix = 1.0 - weights
+        p1 = (1.0 - eta_mix) * np.exp(-0.5 * chi_sq) / np.sqrt(var_array)
+        p2 = eta_mix * np.exp(-0.5 * chi_sq / kappa_sq) / (kappa * np.sqrt(var_array))
+        L = -np.sum(np.log(p1 + p2 + 1e-30)) # Add a small buffer.
+    elif use_t:
+        # Student-t likelihood with nu = 4
+        L = np.sum(2.5 * np.log(1.0 + chi_sq / 4.0) + 0.5 * np.log(var_array))
     else:
         L = 0.5 * np.sum(chi_sq + np.log(var_array))
 
@@ -1176,14 +783,14 @@ def log_likelihood_hierarchical_3d_ncp(theta, vzb, v_trans, bz, var_array,
 @njit(cache=True, nogil=True)
 def log_probability_hierarchical_3d_ncp(theta, vzb, v_trans, bz, ani_list, 
                                         dp_slice, dm_slice, bias_slice, var_array, 
-                                        use_cauchy):
+                                        use_t, use_gmm, weights):
     lp = log_prior_hierarchical_3d_ncp(theta)
     if not np.isfinite(lp):
         return -np.inf
     
     ll = log_likelihood_hierarchical_3d_ncp(theta, vzb, v_trans, bz, var_array, 
                                             ani_list, dp_slice, dm_slice, bias_slice, 
-                                            use_cauchy)
+                                            use_t, use_gmm, weights)
     if not np.isfinite(ll):
         return -np.inf
 
@@ -1193,7 +800,8 @@ def _run_bayesian_pipeline_3d_ncp(block, valid_idx, vzb_fit, v_trans_fit, vz_var
                                   block_nvec_avg, uncertainty_map, flow_angle, 
                                   static_length, tag='x', likelihood_type='Gauss'):
     
-    use_cauchy = True if likelihood_type.lower() == 'cauchy' else False
+    use_t = True if likelihood_type.lower() == 't' else False
+    use_gmm = True if likelihood_type.lower() == 'gmm' else False
 
     lamda = 1.009
     # 1. Calculate the single-plane variance (simplified from 5D)
@@ -1259,6 +867,8 @@ def _run_bayesian_pipeline_3d_ncp(block, valid_idx, vzb_fit, v_trans_fit, vz_var
 
     safe_weights = np.maximum(block.weight_fits.values, 1e-4)**3
 
+    weights_rdf = block.weights_rdf.values[valid_idx]
+
     if tag == 'x':
         var_array = np.maximum(term2_x, 1e-4) / safe_weights
     else:
@@ -1275,7 +885,7 @@ def _run_bayesian_pipeline_3d_ncp(block, valid_idx, vzb_fit, v_trans_fit, vz_var
 
     mask = np.isfinite(vzb_fit) & np.isfinite(v_trans_fit) & np.isfinite(var_array)
     vzb_fit, v_trans_fit, var_array = vzb_fit[mask], v_trans_fit[mask], var_array[mask]
-
+    weights_rdf = weights_rdf[mask]
     if len(vzb_fit) < 2:
         raise ValueError("Not enough finite data points to run 3D MCMC.")
     
@@ -1311,7 +921,7 @@ def _run_bayesian_pipeline_3d_ncp(block, valid_idx, vzb_fit, v_trans_fit, vz_var
     try:
         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability_hierarchical_3d_ncp,
                                         args=(vzb_fit, v_trans_fit, bz, ani_list, 
-                                              dp_slice, dm_slice, bias_slice, var_array, use_cauchy))
+                                              dp_slice, dm_slice, bias_slice, var_array, use_t, use_gmm, weights_rdf))
         sampler.run_mcmc(pos, 400, progress=False)
         log_samples = sampler.get_chain(discard=50, flat=True)
 
@@ -1472,7 +1082,7 @@ def calculate_spc_anisotropy(ds, uncertainty_map, method='Bayesian_MCMC_NCP', li
     elevation  = get_data(ds, "elevation")
 
     # Define the weights
-    # weights = rdf/np.nanmax(rdf, axis=1)[:,None]
+    weights_rdf = rdf/np.nanmax(rdf, axis=1)[:,None]
     weights = itot/np.nanmax(itot, axis=1)[:,None]
     mask_weights = get_contiguous_peak_mask(weights, threshold)
 
@@ -1510,6 +1120,7 @@ def calculate_spc_anisotropy(ds, uncertainty_map, method='Bayesian_MCMC_NCP', li
         vz=(["time", "dim"], vz),
         rdf=(["time", "dim"], rdf),
         weights=(["time", "dim"], weights),
+        weights_rdf = (["time", "dim"], weights_rdf),
         mask=(["time", "dim"], mask_weights),
         peak_az=("time", peak_az),
         peak_el=("time", peak_el),
@@ -1559,13 +1170,23 @@ def calculate_spc_anisotropy(ds, uncertainty_map, method='Bayesian_MCMC_NCP', li
     for (t0, t1) in tqdm(groups, position=pos_id, desc=f"Core {pos_id}", leave=False):
         count += 1
 
-        idx_start = np.searchsorted(raw_time, np.datetime64(t0))
-        idx_end = np.searchsorted(raw_time, np.datetime64(t1))
+        # idx_start = np.searchsorted(raw_time, np.datetime64(t0))
+        # idx_end = np.searchsorted(raw_time, np.datetime64(t1))
 
-        if idx_start != idx_end:
-            block = base.isel(time=slice(idx_start, idx_end))
-        else:
+        # if idx_start != idx_end:
+        #     block = base.isel(time=slice(idx_start, idx_end))
+        # else:
+        #     block = base.isel(time=slice(idx_start, idx_start+1))
+        idx_start = np.searchsorted(raw_time, np.datetime64(t0)) #
+        idx_end = np.searchsorted(raw_time, np.datetime64(t1)) #[cite: 2]
+
+        if t0 == t1:
+            # Single event mode: grab the specific timestamp
             block = base.isel(time=slice(idx_start, idx_start+1))
+        else:
+            # Grouped mode: grab the data between t0 and t1
+            # If there is a data gap (idx_start == idx_end), this naturally returns an empty block!
+            block = base.isel(time=slice(idx_start, idx_end))
 
         block_time = t0 + (t1 - t0)/2 
 

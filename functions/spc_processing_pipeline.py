@@ -154,15 +154,16 @@ def initialize_fitting_data(trange, data_vars, smooth_seconds=None, mode='all', 
         if  mode.lower() == 'full_scan':
             full_scan_flag = np.where(spc_l2.MODE_FLAG.data == 1)[0]
             spc_l2_data = spc_l2.isel(epoch=full_scan_flag)
+            spc_l3      = spc_l3.isel(epoch=full_scan_flag)
         elif mode.lower() == 'peak_track':
             peak_track_flag = np.where(spc_l2.MODE_FLAG.data == 0)[0]
             spc_l2_data = spc_l2.isel(epoch=peak_track_flag)
-            # spc_l2_data = despike_dataset(spc_l2_data, window=5, sigma_threshold=5)
+            spc_l3      = spc_l3.isel(epoch=peak_track_flag)
             print("Despiking dataset!")
             spc_l2_data = despike_dataset(spc_l2_data, threshold=4.0, spikemin=4.0)
         else:
             spc_l2_data = spc_l2
-
+        
     if smooth_seconds and load_l2:
         spc_smooth = smooth_spc_resample(spc_l2, smooth_seconds)
         spc_smooth = spc_smooth.drop_attrs()

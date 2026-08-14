@@ -38,7 +38,8 @@ file_str = '2023-12-27'
 
 year, month, day = file_str.split('-') 
 bimax = cdflib.xarray.cdf_to_xarray(f'./v00/{year}/{month}/spp_swp_spi_sf00_fits_{file_str}_v00.cdf', fillval_to_nan=True)
-spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{file_str}_peak_track_Cauchy_fit4s_gflag.cdf', fillval_to_nan=True)
+spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{file_str}_peak_track_t_fit4s_mf37_gflag.cdf', fillval_to_nan=True)
+# spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{file_str}_peak_track_Cauchy_fit4s_gflag.cdf', fillval_to_nan=True)
 span  = cdflib.xarray.cdf_to_xarray(f'./psp_data/sweap/spi/L3/spi_sf00/{year}/{month}/psp_swp_spi_sf00_L3_mom_{year}{month}{day}_v04.cdf')
 
 spc = spc.rename({'Epoch':'time'})
@@ -53,8 +54,8 @@ span = span.where(span != -1e31, np.nan)
 spc_time = spc.time.data
 
 spc_ani = spc.T_ani_avg.data
-spc_ani_upper = spc_ani + np.sqrt(spc.T_ani_avg_delta_plus.data)
-spc_ani_lower = spc_ani - np.sqrt(spc.T_ani_avg_delta_minus.data)
+spc_ani_upper = spc_ani + spc.T_ani_avg_delta_plus.data
+spc_ani_lower = spc_ani - spc.T_ani_avg_delta_minus.data
 
 chi_ani = spc.T_ani_chi.data
 chi_ani_upper = chi_ani + spc.T_ani_chi_delta_plus.data
@@ -192,6 +193,7 @@ ax4.plot(spc_time[0:6778], el[0:6778], color=color1, linewidth=0.5, alpha=0.5)
 ax5.plot(spc_time, spc.peak_azimuth.data, color='k', linewidth=0.5)
 ax5.plot(spc_time[0:6778], az[0:6778], color=color1, linewidth=0.5, alpha=0.5)
 ax5.axhline(-5.625, color=color3, linestyle='dashed')
+ax5.axhline(-32.00, linestyle='dotted')
 
 # 1. Extract the raw arrays
 time_data = span.Epoch.data

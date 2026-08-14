@@ -20,9 +20,9 @@ if __name__ == "__main__":
         'smooth_seconds': None,
         'spc_mode': 'peak_track',
         'no_weights': None,
-        'weighted_fit': True,
+        'weighted_fit': False,
         'win_max': False,
-        'min_flux': 0.5,
+        'min_flux': 0.37,
         'flow_correction': False,       # Set to True to apply flow angle correction.
         'avg_bfield': False,
         'data_vars': {
@@ -35,7 +35,8 @@ if __name__ == "__main__":
         'gen_flag': True,
         'OFFLINE': True, 
         # 'likelihood_method': "Gauss",
-        'likelihood_method': "Cauchy",
+        'likelihood_method': "t",
+        # 'likelihood_method': 'GMM',
     }
     
     file_path = 'selected_dates_updated.pkl'
@@ -46,15 +47,16 @@ if __name__ == "__main__":
 
     # dates_to_process = ['2023-12-27']
     # dates_to_process = ['2023-09-26']
-    # dates_to_process = ['2025-03-18']
-    dates_to_process = ['2024-03-26']
-    tstart = f'{dates_to_process[0]}T01:00:00'
-    tend   = f'{dates_to_process[0]}T03:00:00'
+    # dates_to_process = ['2025-03-20']
+    # dates_to_process = ['2024-03-26']
+    dates_to_process = ['2023-03-12']
+    tstart = f'{dates_to_process[0]}T05:00:00'
+    tend   = f'{dates_to_process[0]}T09:00:00'
 
     print(f"Queued {len(dates_to_process)} days for processing.")
     
     for date_str in tqdm(dates_to_process):
-        # spc_proc.process_anisotorpy_spc_event(date_str, config, METHOD='Bayesian_MCMC_5D_NCP')
-        spc_proc.process_anisotorpy_spc_event(date_str, config, subrange=[tstart, tend], METHOD='Bayesian_MCMC_5D_NCP')
+        spc_proc.process_anisotorpy_spc_event(date_str, config, METHOD='Bayesian_MCMC_5D_NCP')
+        # spc_proc.process_anisotorpy_spc_event(date_str, config, subrange=[tstart, tend], METHOD='Bayesian_MCMC_5D_NCP')
 
     print('All events completed!')
