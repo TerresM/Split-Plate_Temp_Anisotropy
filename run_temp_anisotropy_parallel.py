@@ -35,23 +35,23 @@ if __name__ == "__main__":
         'avg_bfield': False,
         'data_vars': {
             'spc' : ['l2i', 'l3i'],
-            'fields' : 'mag_SC_4_Sa_per_Cyc'
+            'fields' : 'mag_SC_4_Sa_per_Cyc',
         },
         'credentials': None, 
         'uncert_map': gen_uncertainty_map_with_bias(), 
         'gen_flag': True,
-        'OFFLINE': True, 
+        'OFFLINE': False, 
         'likelihood_method': "T",    # Brought over from the serial script
     }
     
-    file_path = 'selected_dates_updated.pkl'
+    file_path = 'selected_dates_updated_v2.pkl'
 
     # Load the dates list[cite: 5]
     with open(file_path, 'rb') as f:
         loaded_dict = pickle.load(f)
     loaded_list = [date for date_list in loaded_dict.values() for date in date_list]
 
-    cutoff = datetime(2022, 1, 1)
+    cutoff = datetime(2025, 4, 1)
     dates_to_process = [
         d for d in loaded_list
         if datetime.strptime(d, "%Y-%m-%d") > cutoff

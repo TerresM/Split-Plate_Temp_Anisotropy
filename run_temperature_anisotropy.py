@@ -28,7 +28,7 @@ if __name__ == "__main__":
         'data_vars': {
             'spc' : ['l2i', 'l3i'],
             'fields' : 'mag_SC_4_Sa_per_Cyc',
-            # 'spi_sf00' : ['L3']
+            'spi_sf00' : ['L3']
         },
         'credentials': None, 
         'uncert_map': gen_uncertainty_map_with_bias(), 
