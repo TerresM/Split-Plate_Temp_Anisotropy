@@ -15,3 +15,5 @@ v1.3/
 *.txt
 *.pkl
 *.zip
+*.html
+*.npz
