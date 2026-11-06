@@ -30,7 +30,7 @@ if __name__ == "__main__":
         'no_weights': None,
         'weighted_fit': False,             # Brought over from the serial script
         'win_max': False,
-        'min_flux': 0.37,                 # Brought over from the serial script
+        'min_flux': 0.38,                 # Brought over from the serial script
         'flow_correction': False,
         'avg_bfield': False,
         'data_vars': {
@@ -40,8 +40,9 @@ if __name__ == "__main__":
         'credentials': None, 
         'uncert_map': gen_uncertainty_map_with_bias(), 
         'gen_flag': True,
-        'OFFLINE': False, 
+        'OFFLINE': True, 
         'likelihood_method': "T",    # Brought over from the serial script
+        'plot_diagnostics': False,
     }
     
     file_path = 'selected_dates_updated_v2.pkl'
@@ -51,10 +52,10 @@ if __name__ == "__main__":
         loaded_dict = pickle.load(f)
     loaded_list = [date for date_list in loaded_dict.values() for date in date_list]
 
-    cutoff = datetime(2025, 4, 1)
+    cutoff = datetime(2022, 4, 1)
     dates_to_process = [
         d for d in loaded_list
-        if datetime.strptime(d, "%Y-%m-%d") > cutoff
+        if datetime.strptime(d, "%Y-%m-%d") < cutoff
     ]
 
     # 2. Memory-Safe Worker Allocation

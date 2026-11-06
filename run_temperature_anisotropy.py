@@ -12,31 +12,29 @@ plt.ion()
 
 if __name__ == "__main__":
     pyspedas.psp.config.local_data_dir = 'psp_data'
-    pyspedas.psp.config.CONFIG['sweap_remote_data_dir'] = 'https://w3sweap.cfa.harvard.edu/data/sci/'#'http://131.142.18.203/data/sci/'
+    pyspedas.psp.config.CONFIG['sweap_remote_data_dir'] = 'https://w3sweap.cfa.harvard.edu/data/sci/'    
 
     # Configuration
     config = {
-        'fit_seconds':4,
+        'fit_seconds': 4,
         'smooth_seconds': None,
         'spc_mode': 'peak_track',
         'no_weights': None,
         'weighted_fit': False,
         'win_max': False,
-        'min_flux': 0.37,
-        'flow_correction': False,       # Set to True to apply flow angle correction.
+        'min_flux': 0.38,
+        'flow_correction': True,       # Set to True to apply flow angle correction.
         'avg_bfield': False,
         'data_vars': {
             'spc' : ['l2i', 'l3i'],
             'fields' : 'mag_SC_4_Sa_per_Cyc',
-            'spi_sf00' : ['L3']
         },
         'credentials': None, 
         'uncert_map': gen_uncertainty_map_with_bias(), 
         'gen_flag': True,
         'OFFLINE': True, 
-        # 'likelihood_method': "Gauss",
-        'likelihood_method': "t",
-        # 'likelihood_method': 'GMM',
+        'likelihood_method': "T",
+        'plot_diagnostics': False,
     }
     
     file_path = 'selected_dates_updated.pkl'
@@ -45,18 +43,13 @@ if __name__ == "__main__":
     with open(file_path, 'rb') as f:
         loaded_dict = pickle.load(f)
 
-    # dates_to_process = ['2023-12-27']
-    # dates_to_process = ['2023-09-26']
-    # dates_to_process = ['2025-03-20']
-    # dates_to_process = ['2024-03-26']
-    dates_to_process = ['2023-03-12']
-    tstart = f'{dates_to_process[0]}T05:00:00'
-    tend   = f'{dates_to_process[0]}T09:00:00'
+    dates_to_process = ['2023-12-27']
+    tstart = f'{dates_to_process[0]}T06:55:00'
+    tend   = f'{dates_to_process[0]}T07:00:00'
 
     print(f"Queued {len(dates_to_process)} days for processing.")
     
     for date_str in tqdm(dates_to_process):
-        spc_proc.process_anisotorpy_spc_event(date_str, config, METHOD='Bayesian_MCMC_5D_NCP')
-        # spc_proc.process_anisotorpy_spc_event(date_str, config, subrange=[tstart, tend], METHOD='Bayesian_MCMC_5D_NCP')
+        spc_proc.process_anisotorpy_spc_event(date_str, config, METHOD='Bayesian_MCMC_5D_NCP')#, subrange=[tstart, tend])
 
     print('All events completed!')

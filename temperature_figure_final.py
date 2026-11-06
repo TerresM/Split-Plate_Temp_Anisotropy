@@ -49,8 +49,8 @@ if __name__ == "__main__":
         print(f"Processing date: {date}")
 
         # Load Data
-        # spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP_DEP/SPC_Anisotropy_{date}_peak_track_T_fit4s_mf37_gflag.cdf', fillval_to_nan=True)
-        spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_T_fit4s_mf38_gflag_v2.cdf', fillval_to_nan=True)
+        # spc   = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP_DEP/SPC_Anisotropy_{date}_peak_track_T_fit4s_mf37_gflag.cdf', fillval_to_nan=True)
+        spc   = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_T_fit4s_mf38_gflag_v2.cdf', fillval_to_nan=True)
         try:
             span  = cdflib.xarray.cdf_to_xarray(f'./psp_data/sweap/spi/L3/spi_sf00/{year}/{month}/psp_swp_spi_sf00_L3_mom_{year}{month}{day}_v04.cdf')
             bimax = cdflib.xarray.cdf_to_xarray(f'./v00/{year}/{month}/spp_swp_spi_sf00_fits_{date}_v00.cdf', fillval_to_nan=True)

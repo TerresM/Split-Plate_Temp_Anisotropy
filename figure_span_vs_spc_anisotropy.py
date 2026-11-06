@@ -38,7 +38,7 @@ file_str = '2023-12-27'
 
 year, month, day = file_str.split('-') 
 bimax = cdflib.xarray.cdf_to_xarray(f'./v00/{year}/{month}/spp_swp_spi_sf00_fits_{file_str}_v00.cdf', fillval_to_nan=True)
-spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{file_str}_peak_track_t_fit4s_mf37_gflag.cdf', fillval_to_nan=True)
+spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{file_str}_peak_track_t_fit4s_mf50_flowcorr_gflag_v2.cdf', fillval_to_nan=True)
 # spc   = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{file_str}_peak_track_Cauchy_fit4s_gflag.cdf', fillval_to_nan=True)
 span  = cdflib.xarray.cdf_to_xarray(f'./psp_data/sweap/spi/L3/spi_sf00/{year}/{month}/psp_swp_spi_sf00_L3_mom_{year}{month}{day}_v04.cdf')
 

@@ -100,7 +100,7 @@ def generate_spc_filename(date_str, config_dict, method='Bayesian_MCMC', base_di
     os.makedirs(output_dir, exist_ok=True)
 
     # Final filename path
-    filename = f"{output_dir}/SPC_Anisotropy_{date_str}{tag_str}.cdf"
+    filename = f"{output_dir}/SPC_Anisotropy_{date_str}{tag_str}_v2.cdf"
     
     return filename
 
@@ -277,7 +277,7 @@ def time_index(i):
         return encounters[i][1], encounters[i][2]
     return None, None
 
-def process_anisotorpy_spc_event(date_str, config_dict, subrange=None, METHOD='Bayesian_MCMC', pos_id=0):
+def process_anisotorpy_spc_event(date_str, config_dict, subrange=None, METHOD='Bayesian_MCMC_5D_NCP', pos_id=0):
     if subrange is not None:
         tstart, tend = subrange
         range_desc = f"Subrange ({tstart} to {tend})"
@@ -310,7 +310,8 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange=None, METHOD='B
         gen_flag   = config_dict['gen_flag']
         OFFLINE = config_dict['OFFLINE']
         likelihood_method = config_dict['likelihood_method']
-        
+        plot_diagnostics = config_dict.get('plot_diagnostics', False)
+
         trange = [tstart, tend]
 
         init_ds = initialize_fitting_data(trange, data_vars, smooth_seconds=smooth_seconds, mode=spc_mode, credentials=credentials, OFFLINE=OFFLINE)
@@ -331,8 +332,7 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange=None, METHOD='B
         pa_flag = get_pA_flags(init_ds).rename({'epoch':'time'})
 
         # Safely extract the plotting flag (defaults to False if not in config)
-        plot_diagnostics = config_dict.get('plot_diagnostics', False)
-
+        
         # Define the support variables we want to carry over to the final dataset
         support_vars = SUPPORT_VARS
 
@@ -381,7 +381,7 @@ def process_anisotorpy_spc_event(date_str, config_dict, subrange=None, METHOD='B
             # --- RUN NEW UNIFIED BAYESIAN PIPELINE (SINGLE EVENTS) ---
             spc_anisotropy = calculate_spc_anisotropy(
                 init_ds, uncert_map, 
-                method='Bayesian_MCMC', 
+                method='Bayesian_MCMC_NCP', 
                 threshold=min_flux, 
                 no_weights=no_weights, 
                 groups=None, 

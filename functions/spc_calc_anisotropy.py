@@ -14,9 +14,12 @@ import warnings
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from numba import njit
 from tqdm import tqdm
+
+from functions.supporting_plots import plot_spc_diagnostic_with_plates
 
 # Import the scipy packages
 from scipy.optimize import curve_fit
@@ -32,23 +35,28 @@ BASE_NAN_TEMPLATE = {
     "B_x_flow_angle": np.nan, "B_y_flow_angle": np.nan,
     "peak_azimuth": np.nan, "peak_elevation": np.nan,
     
-    "T_ani_avg": np.nan, "T_ani_avg_uncert": np.nan, 
+    # Joint Anisotropy (Linear & Log)
+    "T_ani_avg": np.nan,
     "T_ani_avg_delta_plus": np.nan, "T_ani_avg_delta_minus": np.nan,
+    "T_ani_avg_delta_plus_log": np.nan, "T_ani_avg_delta_minus_log": np.nan,
     
-    "T_ani_chi": np.nan, "T_ani_chi_delta_plus": np.nan, "T_ani_chi_delta_minus": np.nan,
-    "T_ani_psi": np.nan, "T_ani_psi_delta_plus": np.nan, "T_ani_psi_delta_minus": np.nan,
+    # Plane-Specific Effective Anisotropies
+    "T_ani_chi": np.nan,
+    "T_ani_chi_delta_plus": np.nan, "T_ani_chi_delta_minus": np.nan,
+    "T_ani_chi_delta_plus_log": np.nan, "T_ani_chi_delta_minus_log": np.nan,
+
+    "T_ani_psi": np.nan,
+    "T_ani_psi_delta_plus": np.nan, "T_ani_psi_delta_minus": np.nan,
+    "T_ani_psi_delta_plus_log": np.nan, "T_ani_psi_delta_minus_log": np.nan,
     
+    # Intercepts
     "gamma_chi": np.nan, "gamma_chi_delta_plus": np.nan, "gamma_chi_delta_minus": np.nan,
     "gamma_psi": np.nan, "gamma_psi_delta_plus": np.nan, "gamma_psi_delta_minus": np.nan, 
 
-    # These values are obsollete
-    "slope_chi": np.nan, "r_sq_chi": np.nan,
-    "slope_psi": np.nan, "r_sq_psi": np.nan,
-
+    # Goodness of Fit Statistics
     "chi_sq_joint": np.nan, "chi_sq_chi": np.nan, "chi_sq_psi": np.nan,
-    "chi_sq_joint_cauchy": np.nan, "chi_sq_chi_cauchy": np.nan, "chi_sq_psi_cauchy": np.nan,
     "chi_sq_eff_x": np.nan, "chi_sq_eff_y": np.nan,
-    "gamma_int_x": np.nan, "gamma_int_y": np.nan,
+    "chi_sq_joint_robust": np.nan, "chi_sq_chi_robust": np.nan, "chi_sq_psi_robust": np.nan,
 
     "n_samples": np.nan,
 }
@@ -363,10 +371,67 @@ def reconstruct_effective_chain(log_true_chain, eta_chain, log_true_lookup, log_
     
     return log_eff_chain
 
+def _get_uncertainty_slices(angle, uncert_map):
+    """
+    Helper function that interpolates and validates the 1D Slices from the 2D Uncertainty Map.
+    """
+
+    angle_list, ani_list, dp_map, dm_map, bias_map = uncert_map
+    idx = np.nanargmin(np.abs(np.abs(angle) - angle_list))
+
+    dp_slice, dm_slice, bias_slice = dp_map[:, idx], dm_map[:, idx], bias_map[:, idx]
+    valid = np.isfinite(dp_slice) & np.isfinite(dm_slice) & np.isfinite(bias_slice)
+
+    log_ani = np.log10(ani_list)
+    safe_min = log_ani[valid][0] if np.any(valid) else -np.inf
+    safe_max = log_ani[valid][-1] if np.any(valid) else np.inf
+
+    return dp_slice, dm_slice, bias_slice, safe_min, safe_max
+
+def _get_percentile_errors(data):
+    """
+    Compute the median, linear, and logarithmic uncertainties from a 1D array of data.
+    Returns:
+    -------
+    p50 : float
+        The median of the data.
+    plus_lin : float
+        The linear uncertainty above the median (p84 - p50).
+    minus_lin : float
+        The linear uncertainty below the median (p50 - p16).
+    plus_log : float
+        The logarithmic uncertainty above the median (log10(p84) - log10(p50)).
+    minus_log : float
+        The logarithmic uncertainty below the median (log10(p50) - log10(p16)).
+    """
+    p16, p50, p84 = np.percentile(data, [16, 50, 84])
+    plus_lin = p84 - p50
+    minus_lin = p50 - p16
+    if p16 > 0 and p50 > 0 and p84 > 0:
+        plus_log = np.log10(p84) - np.log10(p50)
+        minus_log = np.log10(p50) - np.log10(p16)
+    else:
+        plus_log, minus_log = np.nan, np.nan
+    return p50, plus_lin, minus_lin, plus_log, minus_log
+
+DEFAULT_RES_BUNDLE = {
+            'alpha': np.nan, 'sig_plus_lin': np.nan, 'sig_minus_lin': np.nan,
+            'sig_plus_log': np.nan, 'sig_minus_log': np.nan,
+            'alpha_eff_x': np.nan, 'sig_plus_x': np.nan, 'sig_minus_x': np.nan,
+            'sig_plus_log_x': np.nan, 'sig_minus_log_x': np.nan,
+            'alpha_eff_y': np.nan, 'sig_plus_y': np.nan, 'sig_minus_y': np.nan,
+            'sig_plus_log_y': np.nan, 'sig_minus_log_y': np.nan,
+            'gamma_x': np.nan, 'sig_plus_gam_x': np.nan, 'sig_minus_gam_x': np.nan,
+            'sig_plus_log_gam_x': np.nan, 'sig_minus_log_gam_x': np.nan,
+            'gamma_y': np.nan, 'sig_plus_gam_y': np.nan, 'sig_minus_gam_y': np.nan,
+            'sig_plus_log_gam_y': np.nan, 'sig_minus_log_gam_y': np.nan,
+            'samples': np.full((1, 5), np.nan)
+        }
+
 def run_emcee_hierarchical_5d_ncp(vzbx, vx, vzby, vy, bz, uncert_map, 
                                   xangle, yangle, var_x_array, var_y_array, 
-                                  likelihood_type = "Gauss", 
-                                  mix_weights = None):
+                                  likelihood_type = "Gauss", mix_weights = None,
+                                  nwalkers = 16, nsteps = 400, burn_in = 50):
     use_t = True if likelihood_type.lower() == "t" else False
     use_gmm = True if likelihood_type.lower() == "gmm" else False
 
@@ -374,20 +439,21 @@ def run_emcee_hierarchical_5d_ncp(vzbx, vx, vzby, vy, bz, uncert_map,
         raise ValueError("Weights must be provided when using the GMM likelihood method.")
 
     mask_x = np.isfinite(vzbx) & np.isfinite(vx) & np.isfinite(var_x_array)
-    vzbx, vx, var_x_array = vzbx[mask_x], vx[mask_x], var_x_array[mask_x]
+    vzbx, vx, var_x = vzbx[mask_x], vx[mask_x], var_x_array[mask_x]
     
     mask_y = np.isfinite(vzby) & np.isfinite(vy) & np.isfinite(var_y_array)
-    vzby, vy, var_y_array = vzby[mask_y], vy[mask_y], var_y_array[mask_y]
+    vzby, vy, var_y = vzby[mask_y], vy[mask_y], var_y_array[mask_y]
 
-    mix_weights_x = mix_weights[mask_x] if mix_weights is not None else np.zeros_like(var_x_array)
-    mix_weights_y = mix_weights[mask_y] if mix_weights is not None else np.zeros_like(var_y_array)
+    # I do not know what these are...
+    w_x = mix_weights[mask_x] if mix_weights is not None else np.zeros_like(var_x)
+    w_y = mix_weights[mask_y] if mix_weights is not None else np.zeros_like(var_y)
 
     if len(vzbx) < 2 or len(vzby) < 2:
         raise ValueError("Not enough finite data points to run 5D MCMC.")
 
     # Calculate Initial Alpha Guesses
-    emp_alpha_x, slope_x, intercept_x, weight_x = _calculate_empirical_guess(vzbx, vx, var_x_array, bz)
-    emp_alpha_y, slope_y, intercept_y, weight_y = _calculate_empirical_guess(vzby, vy, var_y_array, bz)
+    emp_alpha_x, slope_x, intercept_x, weight_x = _calculate_empirical_guess(vzbx, vx, var_x, bz)
+    emp_alpha_y, slope_y, intercept_y, weight_y = _calculate_empirical_guess(vzby, vy, var_y, bz)
 
     alphas = np.array([emp_alpha_x, emp_alpha_y])
     aweights = np.array([weight_x, weight_y])
@@ -405,43 +471,26 @@ def run_emcee_hierarchical_5d_ncp(vzbx, vx, vzby, vy, bz, uncert_map,
     gamma_guess_x = 0.0 # intercept_x if np.isfinite(intercept_x) else 0.0
     gamma_guess_y = 0.0 # intercept_y if np.isfinite(intercept_y) else 0.0
 
-    # 3. Handle Uncertainty Map Lookup
-    try:
-        angle_list, ani_list, dp_map, dm_map, bias_map = uncert_map
-    # NOTE: this is obsolete once the final code is updated!
-    except ValueError:
-        angle_list, ani_list, dp_map, dm_map = uncert_map
-        bias_map = np.zeros_like(dp_map)
+    # Handle Uncertainty Map Lookup
+    dp_x, dm_x, bias_x, min_x, max_x = _get_uncertainty_slices(xangle, uncert_map)
+    dp_y, dm_y, bias_y, min_y, max_y = _get_uncertainty_slices(yangle, uncert_map)
 
-    idx_x = np.nanargmin(np.abs(np.abs(xangle) - angle_list))
-    idx_y = np.nanargmin(np.abs(np.abs(yangle) - angle_list))
+    safe_min = max(min_x, min_y) + 0.01
+    safe_max = min(max_x, max_y) - 0.01
 
-    dp_slice_x, dm_slice_x, bias_slice_x = dp_map[:, idx_x], dm_map[:, idx_x], bias_map[:, idx_x]
-    dp_slice_y, dm_slice_y, bias_slice_y = dp_map[:, idx_y], dm_map[:, idx_y], bias_map[:, idx_y]
-
-    # Find where the X and Y slices actually contain valid data
-    valid_x = np.isfinite(dp_slice_x) & np.isfinite(dm_slice_x) & np.isfinite(bias_slice_x)
-    valid_y = np.isfinite(dp_slice_y) & np.isfinite(dm_slice_y) & np.isfinite(bias_slice_y)
-
-    log_ani_list = np.log10(ani_list)
-    safe_min_x, safe_max_x = log_ani_list[valid_x][0], log_ani_list[valid_x][-1]
-    safe_min_y, safe_max_y = log_ani_list[valid_y][0], log_ani_list[valid_y][-1]
-
-    # Use the most restrictive overlapping boundary between X and Y
-    safe_min = max(safe_min_x, safe_min_y) + 0.01
-    safe_max = min(safe_max_x, safe_max_y) - 0.01
-
+    if safe_min >= safe_max:
+        raise ValueError("Safe min and max for log_alpha_true are invalid. Check uncertainty map slices.")
+    
     # 4. Initialize the 5D Walkers
-    nwalkers = 16
     ndim = 5        
 
     # Initialize the alpha true walkers as a random variable number added to the empirical guess.
-    log_pos_alpha_true  = log_emp_alpha + 1e-4 * np.random.randn(nwalkers)
+    log_pos_alpha_true = log_emp_alpha + 1e-2 * np.random.randn(nwalkers)
     log_pos_alpha_true = np.clip(log_pos_alpha_true, safe_min, safe_max)
 
     # Initialize the eta parameters. For this we will start at zero!
-    pos_eta_x = 0.0 + 1e-4 * np.random.randn(nwalkers)
-    pos_eta_y = 0.0 + 1e-4 * np.random.randn(nwalkers)
+    pos_eta_x = 0.0 + 1e-2 * np.random.randn(nwalkers)
+    pos_eta_y = 0.0 + 1e-2 * np.random.randn(nwalkers)
 
     # Define the initial intercept values
     pos_gamma_x = gamma_guess_x + 0.1 * np.random.randn(nwalkers)
@@ -450,78 +499,64 @@ def run_emcee_hierarchical_5d_ncp(vzbx, vx, vzby, vy, bz, uncert_map,
     # Our initial parameter space!
     pos = np.vstack((log_pos_alpha_true, pos_eta_x, pos_eta_y, pos_gamma_x, pos_gamma_y)).T
 
-    
+    res_bundle = DEFAULT_RES_BUNDLE.copy()
     try:
         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability_hierarchical_5d_ncp,
-                                        args = (vzbx, vx, vzby, vy, bz, ani_list, 
-                                        dp_slice_x, dm_slice_x, bias_slice_x, 
-                                        dp_slice_y, dm_slice_y, bias_slice_y, 
-                                        var_x_array, var_y_array, use_t, use_gmm, 
-                                        mix_weights_x, mix_weights_y) 
+                                        args = (vzbx, vx, vzby, vy, bz, uncert_map[1], 
+                                        dp_x, dm_x, bias_x, dp_y, dm_y, bias_y, 
+                                        var_x, var_y, use_t, use_gmm, w_x, w_y) 
                 )
 
-        sampler.run_mcmc(pos, 400, progress=False)
+        sampler.run_mcmc(pos, nsteps, progress=False)
 
-        log_samples = sampler.get_chain(discard=50, flat=True)
+        log_samples = sampler.get_chain(discard=burn_in, flat=True)
 
-        log_true_chain = log_samples[:, 0]
+        ani_list = uncert_map[1]
+        log_ani_list = np.log10(ani_list)
+
+        log_true = log_samples[:, 0]
+        log_lookup = np.clip(log_true, log_ani_list[0], log_ani_list[-1])
+        
         eta_x_chain    = log_samples[:, 1]
         eta_y_chain    = log_samples[:, 2]
         gamma_x_chain  = log_samples[:, 3]
         gamma_y_chain  = log_samples[:, 4]
 
-        log_ani_list = np.log10(ani_list)
-        log_true_lookup = np.clip(log_true_chain, log_ani_list[0], log_ani_list[-1])
+        log_eff_x_chain = reconstruct_effective_chain(log_true, eta_x_chain, log_lookup, 
+                                                      log_ani_list, dp_x, dm_x, bias_x)
+        log_eff_y_chain = reconstruct_effective_chain(log_true, eta_y_chain, log_lookup, 
+                                                      log_ani_list, dp_y, dm_y, bias_y)
+        
+        samples_true  = 10**np.clip(log_true, -5.0, 5.0)    # Add in clipping to avoid NaN values in power
+        samples_eff_x = 10**np.clip(log_eff_x_chain, -5.0, 5.0) # Add in clipping to avoid NaN values in power
+        samples_eff_y = 10**np.clip(log_eff_y_chain, -5.0, 5.0) # Add in clipping to avoid NaN values in power
 
-        log_eff_x_chain = reconstruct_effective_chain(log_true_chain, eta_x_chain, log_true_lookup, 
-                                                      log_ani_list, dp_slice_x, dm_slice_x, bias_slice_x)
-        
-        log_eff_y_chain = reconstruct_effective_chain(log_true_chain, eta_y_chain, log_true_lookup, 
-                                                      log_ani_list, dp_slice_y, dm_slice_y, bias_slice_y)
-        
-        samples_true  = 10**(log_true_chain)
-        samples_eff_x = 10**(log_eff_x_chain)
-        samples_eff_y = 10**(log_eff_y_chain)
+        # Compute the median and uncertainties for each parameter
+        a_med, a_plus_lin, a_minus_lin, a_plus_log, a_minus_log = _get_percentile_errors(samples_true)
+        ax_med, ax_plus, ax_minus, ax_plus_log, ax_minus_log = _get_percentile_errors(samples_eff_x)
+        ay_med, ay_plus, ay_minus, ay_plus_log, ay_minus_log = _get_percentile_errors(samples_eff_y)
+        gx_med, gx_plus, gx_minus, gx_plus_log, gx_minus_log = _get_percentile_errors(gamma_x_chain)
+        gy_med, gy_plus, gy_minus, gy_plus_log, gy_minus_log = _get_percentile_errors(gamma_y_chain)
 
         samples = np.vstack((samples_true, samples_eff_x, samples_eff_y, gamma_x_chain, gamma_y_chain)).T
-        
-        alpha_16, alpha_50, alpha_84 = np.percentile(samples_true, [16, 50, 84])
-        alpha_eff_x_16, alpha_eff_x_50, alpha_eff_x_84 = np.percentile(samples_eff_x, [16, 50, 84])
-        alpha_eff_y_16, alpha_eff_y_50, alpha_eff_y_84 = np.percentile(samples_eff_y, [16, 50, 84])
 
-        gamma_eff_x_16, gamma_eff_x_50, gamma_eff_x_84 = np.percentile(gamma_x_chain, [16, 50, 84])
-        gamma_eff_y_16, gamma_eff_y_50, gamma_eff_y_84 = np.percentile(gamma_y_chain, [16, 50, 84])
-
-        res_bundle = {
-            'alpha'           : alpha_50,
-            'sig_plus'        : alpha_84 - alpha_50,
-            'sig_minus'       : alpha_50 - alpha_16,
-            'alpha_eff_x'     : alpha_eff_x_50,
-            'sig_plus_x'      : alpha_eff_x_84 - alpha_eff_x_50,
-            'sig_minus_x'     : alpha_eff_x_50 - alpha_eff_x_16,
-            'alpha_eff_y'     : alpha_eff_y_50,
-            'sig_plus_y'      : alpha_eff_y_84 - alpha_eff_y_50,
-            'sig_minus_y'     : alpha_eff_y_50 - alpha_eff_y_16,
-            'gamma_x'         : gamma_eff_x_50,
-            'sig_plus_gam_x'  : gamma_eff_x_84 - gamma_eff_x_50,
-            'sig_minus_gam_x' : gamma_eff_x_50 - gamma_eff_x_16,
-            'gamma_y'         : gamma_eff_y_50,
-            'sig_plus_gam_y'  : gamma_eff_y_84 - gamma_eff_y_50,
-            'sig_minus_gam_y' : gamma_eff_y_50 - gamma_eff_y_16,
-            'samples'         : samples 
-        }
-
+        res_bundle.update({
+            'alpha': a_med, 'sig_plus_lin': a_plus_lin, 'sig_minus_lin': a_minus_lin,
+            'sig_plus_log': a_plus_log, 'sig_minus_log': a_minus_log,
+            'alpha_eff_x': ax_med, 'sig_plus_x': ax_plus, 'sig_minus_x': ax_minus,
+            'sig_plus_log_x': ax_plus_log, 'sig_minus_log_x': ax_minus_log,
+            'alpha_eff_y': ay_med, 'sig_plus_y': ay_plus, 'sig_minus_y': ay_minus,
+            'sig_plus_log_y': ay_plus_log, 'sig_minus_log_y': ay_minus_log,
+            'gamma_x': gx_med, 'sig_plus_gam_x': gx_plus, 'sig_minus_gam_x': gx_minus,
+            'sig_plus_log_gam_x': gx_plus_log, 'sig_minus_log_gam_x': gx_minus_log,
+            'gamma_y': gy_med, 'sig_plus_gam_y': gy_plus, 'sig_minus_gam_y': gy_minus,
+            'sig_plus_log_gam_y': gy_plus_log, 'sig_minus_log_gam_y': gy_minus_log,
+            'samples': samples
+        })
     except Exception as e:
-        # If emcee fails completely, fail gracefully by returning NaNs.
-        # This allows the rest of the loop to process chi-squared logic natively as NaN
-        res_bundle = {
-            'alpha'           : np.nan, 'sig_plus'        : np.nan, 'sig_minus'       : np.nan,
-            'alpha_eff_x'     : np.nan, 'sig_plus_x'      : np.nan, 'sig_minus_x'     : np.nan,
-            'alpha_eff_y'     : np.nan, 'sig_plus_y'      : np.nan, 'sig_minus_y'     : np.nan,
-            'gamma_x'         : np.nan, 'sig_plus_gam_x'  : np.nan, 'sig_minus_gam_x' : np.nan,
-            'gamma_y'         : np.nan, 'sig_plus_gam_y'  : np.nan, 'sig_minus_gam_y' : np.nan,
-            'samples'         : np.full((1, 5), np.nan) 
-        }
+        print(f"Error during MCMC sampling: {e}")
+        res_bundle = DEFAULT_RES_BUNDLE.copy()
+        pass
 
     return res_bundle
 
@@ -534,20 +569,20 @@ def _run_bayesian_pipeline_5d_ncp(block, valid_idx, vzbx_fit, vx_fit,
     C = lamda/2.0
 
     # Grab in the plate currents that will be used for defining the plate differences
-    ia_fit = block.ia_curr.values[valid_idx]
-    ib_fit = block.ib_curr.values[valid_idx]
-    ic_fit = block.ic_curr.values[valid_idx]
-    id_fit = block.id_curr.values[valid_idx]
+    ia_fit = block['ia_curr'][valid_idx]
+    ib_fit = block['ib_curr'][valid_idx]
+    ic_fit = block['ic_curr'][valid_idx]
+    id_fit = block['id_curr'][valid_idx]
 
     i_tot = np.maximum(ia_fit + ib_fit + ic_fit + id_fit, 1e-6)     
     i_diff_x = (ia_fit + id_fit) - (ib_fit + ic_fit)
-    i_diff_y = (ic_fit + id_fit) - (ia_fit + ib_fit)
+    i_diff_y = (ia_fit + ib_fit) - (ic_fit + id_fit)
 
     # Convert the standard deviations to variances
-    var_A = block.ia_std.values[valid_idx]**2
-    var_B = block.ib_std.values[valid_idx]**2
-    var_C = block.ic_std.values[valid_idx]**2
-    var_D = block.id_std.values[valid_idx]**2
+    var_A = block['ia_std'][valid_idx]**2
+    var_B = block['ib_std'][valid_idx]**2
+    var_C = block['ic_std'][valid_idx]**2
+    var_D = block['id_std'][valid_idx]**2
 
     # X-Z Plane: Positive = A, D | Negative = B, C
     Sigma_pos_x_sq = var_A + var_D
@@ -558,9 +593,9 @@ def _run_bayesian_pipeline_5d_ncp(block, valid_idx, vzbx_fit, vx_fit,
     Sigma_neg_y_sq = var_C + var_D
 
     # Get the raw vx and vy values
-    vx_raw = block.vx.values[valid_idx]
-    vy_raw = block.vy.values[valid_idx]
-    vz_raw = block.vz.values[valid_idx] 
+    vx_raw = block['vx'][valid_idx]
+    vy_raw = block['vy'][valid_idx]
+    vz_raw = block['vz'][valid_idx] 
     vz_raw_abs = np.abs(vz_raw)
 
     # This is the tangent term
@@ -593,22 +628,24 @@ def _run_bayesian_pipeline_5d_ncp(block, valid_idx, vzbx_fit, vx_fit,
     term2_x = geom_mod_x * var_theta_x
     term2_y = geom_mod_y * var_theta_y
 
-    norm_weights = i_tot / np.sum(i_tot)
-    
+    # norm_weights = i_tot / np.sum(i_tot)
+    term1_x = (tan_theta_x**2) * vz_var
+    term1_y = (tan_theta_y**2) * vz_var
+
     # The variance of the bulk velocity is the sum of the 
     # squared normalized weights * the measurement variances
-    term3_x = np.sum((norm_weights**2) * term2_x)
-    term3_y = np.sum((norm_weights**2) * term2_y)
+    # term3_x = np.sum((norm_weights**2) * term2_x)
+    # term3_y = np.sum((norm_weights**2) * term2_y)
 
-    var_x_array_inst = np.maximum(term2_x, 1e-4) # + term3_x, 1e-4)
-    var_y_array_inst = np.maximum(term2_y, 1e-4) # + term3_y, 1e-4)
+    var_x_array_inst = np.maximum(term1_x + term2_x, 1e-4) # + term3_x, 1e-4)
+    var_y_array_inst = np.maximum(term1_y + term2_y, 1e-4) # + term3_y, 1e-4)
 
-    safe_weights = np.maximum(block.weight_fits.values, 1e-4)
+    safe_weights = np.maximum(block['weight_fits'] if 'weight_fits' in block else 1.0, 1e-4)
 
     var_x_array = var_x_array_inst / safe_weights
     var_y_array = var_y_array_inst / safe_weights
 
-    weights_rdf = block.weights_rdf.values[valid_idx]
+    weights_rdf = block['weights_rdf'][valid_idx]
 
     # Call the NCP EMCEE sampler
     res_bundle = run_emcee_hierarchical_5d_ncp(
@@ -617,93 +654,148 @@ def _run_bayesian_pipeline_5d_ncp(block, valid_idx, vzbx_fit, vx_fit,
         likelihood_type, mix_weights=weights_rdf
     )
 
-    # --- FIXED COPY-PASTE BUGS HERE ---
-    avg_alpha = get_data(res_bundle, 'alpha')
-    avg_sig_plus = get_data(res_bundle, 'sig_plus')
-    avg_sig_minus = get_data(res_bundle, 'sig_minus')
+    # Unpack from res_bundle using the updated keys
+    avg_alpha         = res_bundle['alpha']
+    avg_sig_plus_lin  = res_bundle['sig_plus_lin']
+    avg_sig_minus_lin = res_bundle['sig_minus_lin']
+    avg_sig_plus_log  = res_bundle['sig_plus_log']
+    avg_sig_minus_log = res_bundle['sig_minus_log']
 
-    alpha_eff_x  = get_data(res_bundle, 'alpha_eff_x')
-    sig_plus_x   = get_data(res_bundle, 'sig_plus_x')
-    sig_minus_x  = get_data(res_bundle, 'sig_minus_x') # Fixed
+    alpha_eff_x      = res_bundle['alpha_eff_x']
+    sig_plus_x_lin   = res_bundle['sig_plus_x']
+    sig_minus_x_lin  = res_bundle['sig_minus_x']
+    sig_plus_x_log   = res_bundle['sig_plus_log_x']
+    sig_minus_x_log  = res_bundle['sig_minus_log_x']
 
-    alpha_eff_y  = get_data(res_bundle, 'alpha_eff_y')
-    sig_plus_y   = get_data(res_bundle, 'sig_plus_y')
-    sig_minus_y  = get_data(res_bundle, 'sig_minus_y') # Fixed
+    alpha_eff_y      = res_bundle['alpha_eff_y']
+    sig_plus_y_lin   = res_bundle['sig_plus_y']
+    sig_minus_y_lin  = res_bundle['sig_minus_y']
+    sig_plus_y_log   = res_bundle['sig_plus_log_y']
+    sig_minus_y_log  = res_bundle['sig_minus_log_y']
 
-    gamma_x = get_data(res_bundle, 'gamma_x')
-    sig_plus_gam_x = get_data(res_bundle, 'sig_plus_gam_x' )
-    sig_minus_gam_x = get_data(res_bundle, 'sig_minus_gam_x')
+    gamma_x          = res_bundle['gamma_x']
+    sig_plus_gam_x   = res_bundle['sig_plus_gam_x']
+    sig_minus_gam_x  = res_bundle['sig_minus_gam_x']
 
-    gamma_y = get_data(res_bundle, 'gamma_y')
-    sig_plus_gam_y  = get_data(res_bundle, 'sig_plus_gam_y' ) # Fixed
-    sig_minus_gam_y = get_data(res_bundle, 'sig_minus_gam_y') # Fixed
+    gamma_y          = res_bundle['gamma_y']
+    sig_plus_gam_y   = res_bundle['sig_plus_gam_y']
+    sig_minus_gam_y  = res_bundle['sig_minus_gam_y']
 
-    samples = get_data(res_bundle, 'samples')
+    samples          = res_bundle['samples']
 
     bz = block_nvec_avg[2]
-    
-    # Get the effective x and y fits.
-    m_x = ((1.0 - avg_alpha) * bz) / (1.0 - (1.0 - avg_alpha) * (1.0 - bz**2))
-    m_y = ((1.0 - avg_alpha) * bz) / (1.0 - (1.0 - avg_alpha) * (1.0 - bz**2))
-
-    m_eff_x = ((1.0 - alpha_eff_x) * bz) / (1.0 - (1.0 - alpha_eff_x) * (1.0 - bz**2))
-    m_eff_y = ((1.0 - alpha_eff_y) * bz) / (1.0 - (1.0 - alpha_eff_y) * (1.0 - bz**2))
-    
-    sq_res_x_valid = ((vx_fit - (m_x * vzbx_fit + gamma_x))**2)/ var_x_array
-    sq_res_y_valid = ((vy_fit - (m_y * vzby_fit + gamma_y))**2)/ var_y_array
-
-    sq_res_eff_x_valid = ((vx_fit - (m_eff_x * vzbx_fit + gamma_x))**2)/ var_x_array
-    sq_res_eff_y_valid = ((vy_fit - (m_eff_y * vzby_fit + gamma_y))**2)/ var_y_array
-
     dof_single = max(len(vzbx_fit) - 2.0, 1.0)
     dof_joint = max((2.0 * len(vzbx_fit)) - 3.0, 1.0)
 
-    chi_sq_x = np.sum(sq_res_x_valid) / dof_single
-    chi_sq_y = np.sum(sq_res_y_valid) / dof_single
-    chi_sq_joint = (np.sum(sq_res_x_valid) + np.sum(sq_res_y_valid)) / dof_joint
+    if np.isfinite(avg_alpha):
+        denom_joint = max(((bz**2) + avg_alpha * (1.0 - bz**2)), 1e-12)
+        m_joint = ((1.0 - avg_alpha) * bz) / denom_joint
 
-    # Cauchy Pseudo-Chi-Squared Calculations
-    chi_sq_x_cauchy = np.sum(2.0 * np.log(1.0 + 0.5 * sq_res_x_valid)) / dof_single
-    chi_sq_y_cauchy = np.sum(2.0 * np.log(1.0 + 0.5 * sq_res_y_valid)) / dof_single
-    chi_sq_joint_cauchy = (dof_single * chi_sq_x_cauchy + dof_single * chi_sq_y_cauchy) / dof_joint
+        m_eff_x = ((1.0 - alpha_eff_x) * bz) / max(((bz**2) + alpha_eff_x * (1.0 - bz**2)), 1e-12)
+        m_eff_y = ((1.0 - alpha_eff_y) * bz) / max(((bz**2) + alpha_eff_y * (1.0 - bz**2)), 1e-12)
 
-    chi_sq_eff_x = np.sum(sq_res_eff_x_valid) / dof_single
-    chi_sq_eff_y = np.sum(sq_res_eff_y_valid) / dof_single
+        sq_res_x = ((vx_fit - (m_joint * vzbx_fit + gamma_x))**2) / var_x_array
+        sq_res_y = ((vy_fit - (m_joint * vzby_fit + gamma_y))**2) / var_y_array
 
-    # Create an emply 2D array shaped exactly like the input block (time, dim)
-    block_shape = valid_idx.shape
-    block_res_x = np.full(block_shape, np.nan)
-    block_res_y = np.full(block_shape, np.nan)
+        sq_res_eff_x = ((vx_fit - (m_eff_x * vzbx_fit + gamma_x))**2) / var_x_array
+        sq_res_eff_y = ((vy_fit - (m_eff_y * vzby_fit + gamma_y))**2) / var_y_array
+
+        # Standard reduced chi-squared
+        chi_sq_x = np.sum(sq_res_x) / dof_single
+        chi_sq_y = np.sum(sq_res_y) / dof_single
+        chi_sq_joint = (np.sum(sq_res_x) + np.sum(sq_res_y)) / dof_joint
+
+        # Robust Student-t chi-squared: weights w_i = (nu + 1) / (nu + r_i^2) with nu = 4
+        w_rob_x = 5.0 / (4.0 + sq_res_x)
+        w_rob_y = 5.0 / (4.0 + sq_res_y)
+        chi_sq_x_robust = np.sum(w_rob_x * sq_res_x) / dof_single
+        chi_sq_y_robust = np.sum(w_rob_y * sq_res_y) / dof_single
+        chi_sq_joint_robust = (np.sum(w_rob_x * sq_res_x) + np.sum(w_rob_y * sq_res_y)) / dof_joint
+
+        chi_sq_eff_x = np.sum(sq_res_eff_x) / dof_single
+        chi_sq_eff_y = np.sum(sq_res_eff_y) / dof_single
+    else:
+        chi_sq_x = chi_sq_y = chi_sq_joint = np.nan
+        chi_sq_x_robust = chi_sq_y_robust = chi_sq_joint_robust = np.nan
+        chi_sq_eff_x = chi_sq_eff_y = np.nan
+
+    # Get the effective x and y fits.
+    # m_x = ((1.0 - avg_alpha) * bz) / (1.0 - (1.0 - avg_alpha) * (1.0 - bz**2))
+    # m_y = ((1.0 - avg_alpha) * bz) / (1.0 - (1.0 - avg_alpha) * (1.0 - bz**2))
+
+    # m_eff_x = ((1.0 - alpha_eff_x) * bz) / (1.0 - (1.0 - alpha_eff_x) * (1.0 - bz**2))
+    # m_eff_y = ((1.0 - alpha_eff_y) * bz) / (1.0 - (1.0 - alpha_eff_y) * (1.0 - bz**2))
     
-    # Map the 1D valid residuals back into their exact physical velocity bins
-    block_res_x[valid_idx] = sq_res_x_valid
-    block_res_y[valid_idx] = sq_res_y_valid 
+    # sq_res_x_valid = ((vx_fit - (m_x * vzbx_fit + gamma_x))**2)/ var_x_array
+    # sq_res_y_valid = ((vy_fit - (m_y * vzby_fit + gamma_y))**2)/ var_y_array
 
-    # --- FIXED DICT KEYS HERE ---
+    # sq_res_eff_x_valid = ((vx_fit - (m_eff_x * vzbx_fit + gamma_x))**2)/ var_x_array
+    # sq_res_eff_y_valid = ((vy_fit - (m_eff_y * vzby_fit + gamma_y))**2)/ var_y_array
+
+    # dof_single = max(len(vzbx_fit) - 2.0, 1.0)
+    # dof_joint = max((2.0 * len(vzbx_fit)) - 3.0, 1.0)
+
+    # chi_sq_x = np.sum(sq_res_x_valid) / dof_single
+    # chi_sq_y = np.sum(sq_res_y_valid) / dof_single
+    # chi_sq_joint = (np.sum(sq_res_x_valid) + np.sum(sq_res_y_valid)) / dof_joint
+
+    # # Cauchy Pseudo-Chi-Squared Calculations
+    # chi_sq_x_cauchy = np.sum(2.0 * np.log(1.0 + 0.5 * sq_res_x_valid)) / dof_single
+    # chi_sq_y_cauchy = np.sum(2.0 * np.log(1.0 + 0.5 * sq_res_y_valid)) / dof_single
+    # chi_sq_joint_cauchy = (dof_single * chi_sq_x_cauchy + dof_single * chi_sq_y_cauchy) / dof_joint
+
+    # chi_sq_eff_x = np.sum(sq_res_eff_x_valid) / dof_single
+    # chi_sq_eff_y = np.sum(sq_res_eff_y_valid) / dof_single
+
+    # # Create an emply 2D array shaped exactly like the input block (time, dim)
+    # block_shape = valid_idx.shape
+    # block_res_x = np.full(block_shape, np.nan)
+    # block_res_y = np.full(block_shape, np.nan)
+    
+    # # Map the 1D valid residuals back into their exact physical velocity bins
+    # block_res_x[valid_idx] = sq_res_x_valid
+    # block_res_y[valid_idx] = sq_res_y_valid 
+
     update_dict = {
+        # Joint consensus temperature anisotropy
         "T_ani_avg": avg_alpha,
-        "T_ani_avg_delta_plus": avg_sig_plus,
-        "T_ani_avg_delta_minus": avg_sig_minus,
-        "T_ani_chi" : alpha_eff_x,
-        "T_ani_chi_delta_plus" : sig_plus_x,
-        "T_ani_chi_delta_minus" : sig_minus_x,
-        "T_ani_psi" : alpha_eff_y,
-        "T_ani_psi_delta_plus" : sig_plus_y,
-        "T_ani_psi_delta_minus" : sig_minus_y,
-        "gamma_chi" : gamma_x,
-        "gamma_chi_delta_plus" : sig_plus_gam_x,
-        "gamma_chi_delta_minus" : sig_minus_gam_x,
-        "gamma_psi" : gamma_y,
-        "gamma_psi_delta_plus" : sig_plus_gam_y,   # Fixed
-        "gamma_psi_delta_minus" : sig_minus_gam_y, # Fixed
+        "T_ani_avg_delta_plus": avg_sig_plus_lin,
+        "T_ani_avg_delta_minus": avg_sig_minus_lin,
+        "T_ani_avg_delta_plus_log": avg_sig_plus_log,
+        "T_ani_avg_delta_minus_log": avg_sig_minus_log,
+
+        # Single-plane effective anisotropies
+        "T_ani_chi": alpha_eff_x,
+        "T_ani_chi_delta_plus": sig_plus_x_lin,
+        "T_ani_chi_delta_minus": sig_minus_x_lin,
+        "T_ani_chi_delta_plus_log": sig_plus_x_log,
+        "T_ani_chi_delta_minus_log": sig_minus_x_log,
+
+        "T_ani_psi": alpha_eff_y,
+        "T_ani_psi_delta_plus": sig_plus_y_lin,
+        "T_ani_psi_delta_minus": sig_minus_y_lin,
+        "T_ani_psi_delta_plus_log": sig_plus_y_log,
+        "T_ani_psi_delta_minus_log": sig_minus_y_log,
+
+        # Velocity intercepts
+        "gamma_chi": gamma_x,
+        "gamma_chi_delta_plus": sig_plus_gam_x,
+        "gamma_chi_delta_minus": sig_minus_gam_x,
+        "gamma_psi": gamma_y,
+        "gamma_psi_delta_plus": sig_plus_gam_y,
+        "gamma_psi_delta_minus": sig_minus_gam_y,
+
+        # Standard Chi-squared statistics
         "chi_sq_joint": chi_sq_joint,
         "chi_sq_chi": chi_sq_x,
         "chi_sq_psi": chi_sq_y,
         "chi_sq_eff_x": chi_sq_eff_x,
         "chi_sq_eff_y": chi_sq_eff_y,
-        "chi_sq_chi_cauchy": chi_sq_x_cauchy,
-        "chi_sq_psi_cauchy": chi_sq_y_cauchy,
-        "chi_sq_joint_cauchy": chi_sq_joint_cauchy,
+
+        # Robust Student-t Chi-squared statistics
+        "chi_sq_joint_robust": chi_sq_joint_robust,
+        "chi_sq_chi_robust": chi_sq_x_robust,
+        "chi_sq_psi_robust": chi_sq_y_robust,
     }
 
     # We also return samples and var arrays so the main loop can handle plotting!
@@ -717,7 +809,7 @@ def log_prior_hierarchical_3d_ncp(theta):
     if not (-100 < gamma_int < 100): return -np.inf
 
     log_P_eta = -0.5 * eta**2
-    log_P_gamma = -0.5 * (gamma_int / 10.0)**2
+    log_P_gamma = -0.5 * (gamma_int / 15.0)**2
 
     log_P_physical = 0.0
     penalty_steepness = 0.05  
@@ -798,7 +890,8 @@ def log_probability_hierarchical_3d_ncp(theta, vzb, v_trans, bz, ani_list,
 
 def _run_bayesian_pipeline_3d_ncp(block, valid_idx, vzb_fit, v_trans_fit, vz_var, 
                                   block_nvec_avg, uncertainty_map, flow_angle, 
-                                  static_length, tag='x', likelihood_type='Gauss'):
+                                  static_length, tag='x', likelihood_type='t',
+                                  nwalkers=16, nsteps=400, burn_in=50):
     
     use_t = True if likelihood_type.lower() == 't' else False
     use_gmm = True if likelihood_type.lower() == 'gmm' else False
@@ -806,20 +899,20 @@ def _run_bayesian_pipeline_3d_ncp(block, valid_idx, vzb_fit, v_trans_fit, vz_var
     lamda = 1.009
     # 1. Calculate the single-plane variance (simplified from 5D)
     # Grab in the plate currents that will be used for defining the plate differences
-    ia_fit = block.ia_curr.values[valid_idx]
-    ib_fit = block.ib_curr.values[valid_idx]
-    ic_fit = block.ic_curr.values[valid_idx]
-    id_fit = block.id_curr.values[valid_idx]
+    ia_fit = block['ia_curr'][valid_idx]
+    ib_fit = block['ib_curr'][valid_idx]
+    ic_fit = block['ic_curr'][valid_idx]
+    id_fit = block['id_curr'][valid_idx]
 
     i_tot = np.maximum(ia_fit + ib_fit + ic_fit + id_fit, 1e-6)     
     i_diff_x = (ia_fit + id_fit) - (ib_fit + ic_fit)
-    i_diff_y = (ic_fit + id_fit) - (ia_fit + ib_fit)
+    i_diff_y = (ia_fit + ib_fit) - (ic_fit + id_fit)
 
     # Convert the standard deviations to variances
-    var_A = block.ia_std.values[valid_idx]**2
-    var_B = block.ib_std.values[valid_idx]**2
-    var_C = block.ic_std.values[valid_idx]**2
-    var_D = block.id_std.values[valid_idx]**2
+    var_A = block['ia_std'][valid_idx]**2
+    var_B = block['ib_std'][valid_idx]**2
+    var_C = block['ic_std'][valid_idx]**2
+    var_D = block['id_std'][valid_idx]**2
 
     # X-Z Plane: Positive = A, D | Negative = B, C
     Sigma_pos_x_sq = var_A + var_D
@@ -830,157 +923,174 @@ def _run_bayesian_pipeline_3d_ncp(block, valid_idx, vzb_fit, v_trans_fit, vz_var
     Sigma_neg_y_sq = var_C + var_D
     
     # Get the raw vx and vy values
-    vx_raw = block.vx.values[valid_idx]
-    vy_raw = block.vy.values[valid_idx]
-    vz_raw = block.vz.values[valid_idx] 
+    vx_raw = block['vx'][valid_idx]
+    vy_raw = block['vy'][valid_idx]
+    vz_raw = block['vz'][valid_idx] 
     vz_raw_abs = np.abs(vz_raw)
 
     # This is the tangent term
-    tan_theta_x = vx_raw / vz_raw_abs    
-    tan_theta_y = vy_raw / vz_raw_abs
+    # tan_theta_x = vx_raw / vz_raw_abs    
+    # tan_theta_y = vy_raw / vz_raw_abs
 
     # Get the angle in radians
-    theta_x_rad = np.arctan(tan_theta_x)
-    theta_y_rad = np.arctan(tan_theta_y)
+    # theta_x_rad = np.arctan(tan_theta_x)
+    # theta_y_rad = np.arctan(tan_theta_y)
 
     # Define the angular variance prefix
     angle_var_prefix = (lamda / (2.0 * i_tot**2))**2
 
-    # The variance in theta x
-    var_theta_x = angle_var_prefix * (
-        ((i_tot - i_diff_x)**2 * Sigma_pos_x_sq) + 
-        ((i_tot + i_diff_x)**2 * Sigma_neg_x_sq)
-    )
-
-    # The variance in theta y
-    var_theta_y = angle_var_prefix * (
-        ((i_tot - i_diff_y)**2 * Sigma_pos_y_sq) + 
-        ((i_tot + i_diff_y)**2 * Sigma_neg_y_sq)
-    )
+    if tag == 'x':
+        tan_theta = vx_raw / vz_raw_abs    
+        theta_rad = np.arctan(tan_theta)
+        var_theta = angle_var_prefix * (
+            ((i_tot - i_diff_x)**2 * Sigma_pos_x_sq) + 
+            ((i_tot + i_diff_x)**2 * Sigma_neg_x_sq)
+        )
+    else:
+        tan_theta = vy_raw / vz_raw_abs
+        theta_rad = np.arctan(tan_theta)
+        var_theta = angle_var_prefix * (
+            ((i_tot - i_diff_y)**2 * Sigma_pos_y_sq) + 
+            ((i_tot + i_diff_y)**2 * Sigma_neg_y_sq)
+        )
 
     # The geometric modifier
-    geom_mod_x = (vz_raw_abs / np.cos(theta_x_rad)**2)**2
-    geom_mod_y = (vz_raw_abs / np.cos(theta_y_rad)**2)**2
+    geom_mod = (vz_raw_abs / np.cos(theta_rad)**2)**2
+    term2 = geom_mod * var_theta
+    term1 = (tan_theta**2) * vz_var
 
-    term2_x = geom_mod_x * var_theta_x
-    term2_y = geom_mod_y * var_theta_y
+    safe_weights = np.maximum(block['weight_fits'] if 'weight_fits' in block else 1.0, 1e-4)
+    var_array = np.maximum(term1 + term2, 1e-4) / safe_weights
+    weights_rdf = block['weights_rdf'][valid_idx]
 
-    safe_weights = np.maximum(block.weight_fits.values, 1e-4)**3
-
-    weights_rdf = block.weights_rdf.values[valid_idx]
-
-    if tag == 'x':
-        var_array = np.maximum(term2_x, 1e-4) / safe_weights
-    else:
-        var_array = np.maximum(term2_y, 1e-4) / safe_weights
-        
-    # 2. Get Uncertainty Map Slice
-    angle_list, ani_list, dp_map, dm_map, bias_map = uncertainty_map
-    idx_angle = np.nanargmin(np.abs(np.abs(flow_angle) - angle_list))
-    dp_slice = dp_map[:, idx_angle]
-    dm_slice = dm_map[:, idx_angle]
-    bias_slice = bias_map[:, idx_angle]
-
-    bz = block_nvec_avg[2]
-
-    mask = np.isfinite(vzb_fit) & np.isfinite(v_trans_fit) & np.isfinite(var_array)
-    vzb_fit, v_trans_fit, var_array = vzb_fit[mask], v_trans_fit[mask], var_array[mask]
-    weights_rdf = weights_rdf[mask]
-    if len(vzb_fit) < 2:
-        raise ValueError("Not enough finite data points to run 3D MCMC.")
-    
-    # 3. Empirical Guess
-    emp_alpha, slope, intercept, weight = _calculate_empirical_guess(vzb_fit, v_trans_fit, var_array, bz)
-    emp_alpha = np.clip(emp_alpha if np.isfinite(emp_alpha) else 1.0, 0.15, 9.85)
-    log_emp_alpha = np.log10(emp_alpha)
-    gamma_guess = 0.0 #intercept if np.isfinite(intercept) else 0.0
-
-    # 4. Initialize 3D Walkers
-    valid = np.isfinite(dp_slice) & np.isfinite(dm_slice) & np.isfinite(bias_slice)
-    
-    # Check if the slice is completely empty
-    if np.sum(valid) < 2:
-        raise ValueError("3D Uncertainty map slice is empty.")
-        
-    log_ani_list = np.log10(ani_list)
-    safe_min = log_ani_list[valid][0] + 0.01
-    safe_max = log_ani_list[valid][-1] - 0.01
-
-    nwalkers, ndim = 16, 3
-    log_pos_alpha_true = log_emp_alpha + 1e-1 * np.random.randn(nwalkers)
-    
-    # Dynamically clip the 3D walkers!
-    log_pos_alpha_true = np.clip(log_pos_alpha_true, safe_min, safe_max)
-
-    pos = np.vstack((
-        log_pos_alpha_true,
-        0.0 + 1e-1 * np.random.randn(nwalkers),
-        gamma_guess + 2.0 * np.random.randn(nwalkers)
-    )).T
-
+    samples_5d = np.full((1, 5), np.nan)  # Placeholder for 5D samples
+    res_dict = DEFAULT_RES_BUNDLE.copy()
+    res_dict.pop("samples", None)  # Remove the samples key to avoid confusion
     try:
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability_hierarchical_3d_ncp,
-                                        args=(vzb_fit, v_trans_fit, bz, ani_list, 
-                                              dp_slice, dm_slice, bias_slice, var_array, use_t, use_gmm, weights_rdf))
-        sampler.run_mcmc(pos, 400, progress=False)
-        log_samples = sampler.get_chain(discard=50, flat=True)
+        # Get Uncertainty Map Slice
+        dp_slice, dm_slice, bias_slice, safe_min_raw, safe_max_raw = _get_uncertainty_slices(flow_angle, uncertainty_map)
+        safe_min = safe_min_raw + 0.01
+        safe_max = safe_max_raw - 0.01
 
-        log_true_chain = log_samples[:, 0]
+        if safe_min >= safe_max:
+            raise ValueError(f"3D Uncertainty map slice for {tag}-plane is empty or degenerate.")
+
+        # Sanitize Valid Arrays
+        mask = np.isfinite(vzb_fit) & np.isfinite(v_trans_fit) & np.isfinite(var_array)
+        vzb, v_trans, var_arr = vzb_fit[mask], v_trans_fit[mask], var_array[mask]
+        w_rdf = weights_rdf[mask]
+
+        if len(vzb) < 2:
+            raise ValueError("Not enough finite data points to run 3D MCMC.")
+
+        bz = block_nvec_avg[2]
+
+        # Empirical Guess
+        emp_alpha, slope, intercept, weight = _calculate_empirical_guess(vzb, v_trans, var_arr, bz)
+        emp_alpha = np.clip(emp_alpha if np.isfinite(emp_alpha) else 1.0, 0.15, 9.85)
+        log_emp_alpha = np.log10(emp_alpha)
+
+        ndim = 3
+        pos = np.column_stack([
+            np.clip(log_emp_alpha + 1e-2 * np.random.randn(nwalkers), safe_min, safe_max),
+            0.0 + 1e-2 * np.random.randn(nwalkers),  # eta
+            0.0 + 0.1 * np.random.randn(nwalkers)    # gamma
+        ])
+
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability_hierarchical_3d_ncp,
+                                        args=(vzb, v_trans, bz, uncertainty_map[1], 
+                                              dp_slice, dm_slice, bias_slice, var_arr, use_t, use_gmm, w_rdf))
+        sampler.run_mcmc(pos, nsteps, progress=False)
+        log_samples = sampler.get_chain(discard=burn_in, flat=True)
+
+        ani_list = uncertainty_map[1]
+        log_ani_list = np.log10(ani_list)
+        log_true = log_samples[:, 0]
+        log_lookup = np.clip(log_true, log_ani_list[0], log_ani_list[-1])
+
         eta_chain      = log_samples[:, 1]
         gamma_chain    = log_samples[:, 2]
 
-        log_true_lookup = np.clip(log_true_chain, np.log10(ani_list[0]), np.log10(ani_list[-1]))
-        log_eff_chain = reconstruct_effective_chain(log_true_chain, eta_chain, log_true_lookup, 
+        log_eff_chain = reconstruct_effective_chain(log_true, eta_chain, log_lookup, 
                                                     np.log10(ani_list), dp_slice, dm_slice, bias_slice)
+
+        samples_true  = 10**np.clip(log_true, -5.0, 5.0)    # Add in clipping to avoid NaN values in power
+        samples_eff   = 10**np.clip(log_eff_chain, -5.0, 5.0) # Add in clipping to avoid NaN values in power
+
+        a_med, a_plus_lin, a_minus_lin, a_plus_log, a_minus_log = _get_percentile_errors(samples_true)
+        eff_med, eff_plus, eff_minus, eff_plus_log, eff_minus_log = _get_percentile_errors(samples_eff)
+        gam_med, gam_plus, gam_minus, gam_plus_log, gam_minus_log = _get_percentile_errors(gamma_chain)
+
+        # Calculate the reduced chi-squared for the effective fit.        
+        dof = max(len(vzb) - 2.0, 1.0)
+        denom = max(((bz**2) + eff_med * (1.0 - bz**2)), 1e-12)
+        M = ((1.0 - eff_med) * bz) / denom
+        sq_res = ((v_trans - (M * vzb + gam_med))**2) / var_arr
         
-        alpha_50 = np.percentile(10**log_true_chain, 50)
-        sig_plus = np.percentile(10**log_true_chain, 84) - alpha_50
-        sig_minus = alpha_50 - np.percentile(10**log_true_chain, 16)
-        
-        alpha_eff_50 = np.percentile(10**log_eff_chain, 50)
-        sig_plus_eff = np.percentile(10**log_eff_chain, 84) - alpha_eff_50
-        sig_minus_eff = alpha_eff_50 - np.percentile(10**log_eff_chain, 16)
-        
-        gamma_50 = np.percentile(gamma_chain, 50)
-        sig_plus_gam = np.percentile(gamma_chain, 84) - gamma_50
-        sig_minus_gam = gamma_50 - np.percentile(gamma_chain, 16)
-        
-        # Calculate chi_sq for the valid plane
-        M = ((1.0 - alpha_eff_50) * bz) / max(((bz**2) + alpha_eff_50 * (1.0 - bz**2)), 1e-30)
-        chi_sq_eff = np.sum(((v_trans_fit - (M * vzb_fit + gamma_50))**2) / var_array) / max(len(vzb_fit) - 2.0, 1.0)
-        
+        chi_sq = np.sum(sq_res) / dof
+        w_rob = 5.0 / (4.0 + sq_res)
+        chi_sq_robust = np.sum(w_rob * sq_res) / dof
+
+        # 7. Construct 5-Column Samples Array (Pad unmeasured plane with NaNs)
+        nan_col = np.full_like(samples_true, np.nan)
+        if tag == 'x':
+            samples_5d = np.column_stack([samples_true, samples_eff, nan_col, gamma_chain, nan_col])
+        else:
+            samples_5d = np.column_stack([samples_true, nan_col, samples_eff, nan_col, gamma_chain])
+
+        # 8. Build Results Dictionary
+        res_dict.update({
+            "T_ani_avg": a_med,
+            "T_ani_avg_delta_plus": a_plus_lin,
+            "T_ani_avg_delta_minus": a_minus_lin,
+            "T_ani_avg_delta_plus_log": a_plus_log,
+            "T_ani_avg_delta_minus_log": a_minus_log,
+            "chi_sq_joint": chi_sq,
+            "chi_sq_joint_robust": chi_sq_robust,
+            # "samples": samples_5d
+        })
+
+        if tag == 'x':
+            res_dict.update({
+                "T_ani_chi": eff_med,
+                "T_ani_chi_delta_plus": eff_plus,
+                "T_ani_chi_delta_minus": eff_minus,
+                "T_ani_chi_delta_plus_log": eff_plus_log,
+                "T_ani_chi_delta_minus_log": eff_minus_log,
+                "gamma_chi": gam_med,
+                "gamma_chi_delta_plus": gam_plus,
+                "gamma_chi_delta_minus": gam_minus,
+                "chi_sq_chi": chi_sq,
+                "chi_sq_eff_x": chi_sq,
+                "chi_sq_chi_robust": chi_sq_robust,
+            })
+            var_x_out = var_array
+            var_y_out = np.full_like(var_array, np.nan)
+        else:
+            res_dict.update({
+                "T_ani_psi": eff_med,
+                "T_ani_psi_delta_plus": eff_plus,
+                "T_ani_psi_delta_minus": eff_minus,
+                "T_ani_psi_delta_plus_log": eff_plus_log,
+                "T_ani_psi_delta_minus_log": eff_minus_log,
+                "gamma_psi": gam_med,
+                "gamma_psi_delta_plus": gam_plus,
+                "gamma_psi_delta_minus": gam_minus,
+                "chi_sq_psi": chi_sq,
+                "chi_sq_eff_y": chi_sq,
+                "chi_sq_psi_robust": chi_sq_robust,
+            })
+            var_x_out = np.full_like(var_array, np.nan)
+            var_y_out = var_array
+
     except Exception as e:
-        alpha_50 = sig_plus = sig_minus = alpha_eff_50 = sig_plus_eff = sig_minus_eff = np.nan
-        gamma_50 = sig_plus_gam = sig_minus_gam = chi_sq_eff = np.nan
+        print(f"Error during 3D MCMC sampling ({tag}-plane): {e}")
+        samples_5d = np.full((1, 5), np.nan)
+        var_x_out = var_array if tag == 'x' else np.full_like(var_array, np.nan)
+        var_y_out = var_array if tag == 'y' else np.full_like(var_array, np.nan)
 
-    # 5. Smart Dictionary Padding
-    update_dict = {
-        "T_ani_avg": alpha_50,
-        "T_ani_avg_delta_plus": sig_plus,
-        "T_ani_avg_delta_minus": sig_minus,
-        "chi_sq_joint": chi_sq_eff, # For a single plane, joint is just the single plane
-    }
+    return res_dict, samples_5d, var_x_out, var_y_out
 
-    if tag == 'x':
-        update_dict.update({
-            "T_ani_chi": alpha_eff_50, "T_ani_chi_delta_plus": sig_plus_eff, "T_ani_chi_delta_minus": sig_minus_eff,
-            "T_ani_psi": np.nan, "T_ani_psi_delta_plus": np.nan, "T_ani_psi_delta_minus": np.nan,
-            "gamma_chi": gamma_50, "gamma_chi_delta_plus": sig_plus_gam, "gamma_chi_delta_minus": sig_minus_gam,
-            "gamma_psi": np.nan, "gamma_psi_delta_plus": np.nan, "gamma_psi_delta_minus": np.nan,
-            "chi_sq_chi": chi_sq_eff, "chi_sq_psi": np.nan,
-            "chi_sq_eff_x": chi_sq_eff, "chi_sq_eff_y": np.nan
-        })
-        return update_dict, None, var_array, np.full_like(var_array, np.nan)
-    else:
-        update_dict.update({
-            "T_ani_chi": np.nan, "T_ani_chi_delta_plus": np.nan, "T_ani_chi_delta_minus": np.nan,
-            "T_ani_psi": alpha_eff_50, "T_ani_psi_delta_plus": sig_plus_eff, "T_ani_psi_delta_minus": sig_minus_eff,
-            "gamma_chi": np.nan, "gamma_chi_delta_plus": np.nan, "gamma_chi_delta_minus": np.nan,
-            "gamma_psi": gamma_50, "gamma_psi_delta_plus": sig_plus_gam, "gamma_psi_delta_minus": sig_minus_gam,
-            "chi_sq_chi": np.nan, "chi_sq_psi": chi_sq_eff,
-            "chi_sq_eff_x": np.nan, "chi_sq_eff_y": chi_sq_eff
-        })
-        return update_dict, None, np.full_like(var_array, np.nan), var_array
 
 
 def calc_slope_from_anisotropy(alpha, bz):
@@ -1082,30 +1192,36 @@ def calculate_spc_anisotropy(ds, uncertainty_map, method='Bayesian_MCMC_NCP', li
     elevation  = get_data(ds, "elevation")
 
     # Define the weights
+
+    # We use the RDF as the primary weighting for calculation the moments 
+    # and performing the subsequent fitting.
     weights_rdf = rdf/np.nanmax(rdf, axis=1)[:,None]
-    weights = itot/np.nanmax(itot, axis=1)[:,None]
+    weights     = itot/np.nanmax(itot, axis=1)[:,None]
     mask_weights = get_contiguous_peak_mask(weights, threshold)
 
     # Use the RDF as the weights for the moment, strictly within the mask
+    delta_vz = vz_hi - vz_lo    # Velocity width for the vz measurement
     moment_weights = np.where(mask_weights, rdf, 0.0)
-
-    # Sum the weights across the velocity axis (axis=1)
-    sum_weights = np.sum(moment_weights, axis=1)
-
     # Protect against divide by zero!
+    integral_weights = np.where(mask_weights, rdf * delta_vz, 0.0)
+
+    sum_weights = np.sum(integral_weights, axis=1)
     sum_weights = np.where(sum_weights == 0, np.nan, sum_weights)
 
     # Get the u_z moment value!
-    u_z = np.sum(np.where(mask_weights, vz, 0.0) * moment_weights, axis=1) / sum_weights
-    
-    # Get the peak values from the vdf
-    max_idx = np.nanargmax(np.where(mask_weights, rdf, np.nan), axis=1) # get the peak value for every time.
-    n_times = rdf.shape[0]      # Length of time
-    row_idx = np.arange(n_times)
+    u_z = (
+        np.sum(
+            np.where(mask_weights, vz * integral_weights, 0.0), axis=1
+        )  #[cite: 8]
+        / sum_weights
+    )
+    valid_rows = np.any(mask_weights, axis=1)   # Rows with at least one valid weight
+    max_idx = np.zeros(rdf.shape[0], dtype=int)
+    max_idx[valid_rows] = np.nanargmax(np.where(mask_weights[valid_rows], rdf[valid_rows], np.nan), axis=1)
+    row_idx = np.arange(rdf.shape[0])
 
     u_x = -u_z * np.tan(np.radians(azimuth[row_idx, max_idx]))
     u_y = -u_z * np.tan(-np.radians(elevation[row_idx, max_idx]))
-    # u_z = np.where(mask_weights, vz, np.nan)[row_idx, max_idx]
 
     uvec = np.squeeze(np.dstack([u_x, u_y, u_z]))
 
@@ -1113,282 +1229,259 @@ def calculate_spc_anisotropy(ds, uncertainty_map, method='Bayesian_MCMC_NCP', li
         mask_weights = np.isfinite(weights)
         weights = np.ones_like(weights)
 
-    # Package into Dataset for easy block slicing
-    base_dict = dict(
-        vx=(["time", "dim"], vx),
-        vy=(["time", "dim"], vy),
-        vz=(["time", "dim"], vz),
-        rdf=(["time", "dim"], rdf),
-        weights=(["time", "dim"], weights),
-        weights_rdf = (["time", "dim"], weights_rdf),
-        mask=(["time", "dim"], mask_weights),
-        peak_az=("time", peak_az),
-        peak_el=("time", peak_el),
-        bvec=(["time", "vec"], bvec),
-        ia_curr=(["time", "dim"], ia_curr),
-        ib_curr=(["time", "dim"], ib_curr),
-        ic_curr=(["time", "dim"], ic_curr),
-        id_curr=(["time", "dim"], id_curr),
-        ia_std=(["time", "dim"], ia_std),
-        ib_std=(["time", "dim"], ib_std),
-        ic_std=(["time", "dim"], ic_std),
-        id_std=(["time", "dim"], id_std),
-    )
-
-    # # Pre-calculate the magnetic field geometry if not averaging over the block
-    # if not use_avg_bfield:
     nvec = bvec / np.linalg.norm(bvec, axis=1)[:,None]
-    base_dict['nvec'] = (["time", "vec"], nvec)
-    base_dict['uvec'] = (["time", "vec"], uvec)
-    base_dict['itot'] = (["time", "dim"], itot)
 
-    # Vz Error estimation, this comes in for uncertainty calculations
-    vz_geo_center = (vz_hi + vz_lo)/ 2.0
+    # Vz variance propagation
+    vz_geo_center = (vz_hi + vz_lo) / 2.0
     vz_bias_sq = (vz - vz_geo_center)**2
     vz_quant_var = ((vz_hi - vz_lo)**2) / 12.0
-    
-    # --- MISSING CODE: Call the finite difference function ---
     vz_hw_var = calc_vz_hardware_variance(mv_lo, mv_hi, sig_mv_lo, sig_mv_hi)
-    
-    # Combine quantization, bias, and hardware jitter
-    base_dict['vz_var'] = (["time", "dim"], vz_quant_var + vz_bias_sq + vz_hw_var)
+    vz_var_tot = vz_quant_var + vz_bias_sq + vz_hw_var
 
-    base = xr.Dataset(base_dict, coords = dict(time=time))
-    static_length = base.vx.shape[1]
+    base_dict = {
+        'vx': vx, 'vy': vy, 'vz': vz,
+        'rdf': rdf, 'weights': weights, 'weights_rdf': weights_rdf,
+        'mask': mask_weights, 'peak_az': peak_az, 'peak_el': peak_el,
+        'bvec': bvec, 'nvec': nvec, 'uvec': uvec,
+        'itot': itot, 'ia_curr': ia_curr, 'ib_curr': ib_curr,
+        'ic_curr': ic_curr, 'id_curr': id_curr,
+        'ia_std': ia_std, 'ib_std': ib_std, 'ic_std': ic_std, 'id_std': id_std,
+        'vz_var': vz_var_tot, 'time': time,
+    }
 
+    static_length = vx.shape[1]
     nan_template = BASE_NAN_TEMPLATE.copy()
-
     all_results = []
 
     # Handle Single Events
     if groups is None:
-        groups = [(t,t) for t in time.values]
+        groups = [(t,t) for t in time]
 
-    count = 0
-    raw_time = base.time.values
+    range_counter = 0
 
     for (t0, t1) in tqdm(groups, position=pos_id, desc=f"Core {pos_id}", leave=False):
-        count += 1
-
-        # idx_start = np.searchsorted(raw_time, np.datetime64(t0))
-        # idx_end = np.searchsorted(raw_time, np.datetime64(t1))
-
-        # if idx_start != idx_end:
-        #     block = base.isel(time=slice(idx_start, idx_end))
-        # else:
-        #     block = base.isel(time=slice(idx_start, idx_start+1))
-        idx_start = np.searchsorted(raw_time, np.datetime64(t0)) #
-        idx_end = np.searchsorted(raw_time, np.datetime64(t1)) #[cite: 2]
+        # count += 1
+        idx_start = np.searchsorted(time, np.datetime64(t0)) 
+        idx_end = np.searchsorted(time, np.datetime64(t1)) 
 
         if t0 == t1:
-            # Single event mode: grab the specific timestamp
-            block = base.isel(time=slice(idx_start, idx_start+1))
-        else:
-            # Grouped mode: grab the data between t0 and t1
-            # If there is a data gap (idx_start == idx_end), this naturally returns an empty block!
-            block = base.isel(time=slice(idx_start, idx_end))
+            idx_end = idx_start + 1
 
         block_time = t0 + (t1 - t0)/2 
 
-        # Filter out the NaN B-fields
-        block_bvec_nan = np.all(np.isnan(block.bvec.data), axis=1)
-        if np.all(block_bvec_nan) or block.time.size == 0:
-            result_ds = package_to_xarray(nan_template.copy(), block_time, t0, t1)
-            all_results.append(result_ds)
+        if idx_start >= idx_end:
+            nan_rec = nan_template.copy()
+            nan_rec['time'] = block_time
+            all_results.append(nan_rec)
             continue
-        elif np.any(block_bvec_nan):
-            block = block.isel(time=~block_bvec_nan)
 
-        n_samples = block.time.size
+        bvec_slice = base_dict['bvec'][idx_start:idx_end]
+        valid_bvec = ~np.all(np.isnan(bvec_slice), axis=1)
 
-        if win_max:
-            # weights_block = block.rdf.values / np.nanmax(block.rdf.values)
-            weights_block = block.itot.values / np.nanmax(block.itot.values)
-            valid_idx = get_contiguous_peak_mask(weights_block, threshold)
-            base_weights = weights_block[valid_idx]
-        else:
-            valid_idx = block.mask.values
-            base_weights = block.weights.values[valid_idx]
+        if not np.any(valid_bvec):
+            nan_rec = nan_template.copy()
+            nan_rec['time'] = block_time
+            all_results.append(nan_rec)
+            continue
 
-        # Windowing and weighting masks
-        if weighted_fit:
-            block['weight_fits'] = base_weights
-        else:
-            block['weight_fits'] = np.ones(len(block.weights.values[valid_idx]))
-
-        vx_fit = (block.vx.values - block.uvec.values[:,0][:,None])[valid_idx] 
-        vy_fit = (block.vy.values - block.uvec.values[:,1][:,None])[valid_idx] 
-        vz_var = block.vz_var.values[valid_idx]
-
+        # Supposedly fast dictonary-based slicing of the block.
+        block = {key: val[idx_start:idx_end][valid_bvec] for key, val in base_dict.items()}
+        
         # Apply Magnetic Field Geometry
         if use_avg_bfield:
-            block_bvec_avg_calc = np.nanmean(block.bvec.values, axis=0)
+            block_bvec_avg_calc = np.nanmean(block['bvec'], axis=0)
             block_nvec_avg = block_bvec_avg_calc / np.linalg.norm(block_bvec_avg_calc)
-            vz_shifted = block.vz.values - block.uvec.values[:,2][:,None]
-            vzbx_fit = (vz_shifted * block_nvec_avg[0])[valid_idx]
-            vzby_fit = (vz_shifted * block_nvec_avg[1])[valid_idx]
+            vz_shifted = block['vz'] - block['uvec'][:, 2][:, None]
         else:
-            vz_shifted = block.vz.values - block.uvec.values[:,2][:,None]
-
-            vzbx_fit = (vz_shifted * block.nvec.values[:, 0][:, None])[valid_idx] 
-            vzby_fit = (vz_shifted * block.nvec.values[:, 1][:, None])[valid_idx] 
-            block_nvec_avg = np.nanmean(block.nvec.values, axis=0)
+            vz_shifted = block['vz'] - block['uvec'][:, 2][:, None]
+            block_nvec_avg = np.nanmean(block['nvec'], axis=0)
             block_nvec_avg /= np.linalg.norm(block_nvec_avg)
-            
 
-        if len(vzbx_fit) < 2 or len(vzby_fit) < 2:
-            result_ds = package_to_xarray(nan_template.copy(), block_time, t0, t1)
-            all_results.append(result_ds)
-            continue
-
-        block_bvec_to_save = np.nanmean(block.bvec.values, axis=0)
-
-        block_bvec_var = np.nanvar(block.bvec.values, axis=0)
+        block_bvec_to_save = np.nanmean(block['bvec'], axis=0)
+        block_bvec_var = np.nanvar(block['bvec'], axis=0)
         b_var_tot = np.nansum(block_bvec_var)
 
         xangle = np.degrees(np.arctan(block_nvec_avg[0] / block_nvec_avg[2]))
         yangle = np.degrees(np.arctan(block_nvec_avg[1] / block_nvec_avg[2]))
 
-        x_only, y_only = False, False
-        if np.abs(xangle) < 4: y_only = True
-        if np.abs(yangle) < 4: x_only = True
+        geom_ok_x = np.abs(xangle) >= 4.0
+        geom_ok_y = np.abs(yangle) >= 4.0
 
-        if x_only and y_only:
-            result_ds = package_to_xarray(nan_template.copy(), block_time, t0, t1)
-            all_results.append(result_ds)
-            continue
+        mask_core = block['mask']
+        rel_itot = block['weights']
+
+        I_x_pos = block['ia_curr'] + block['id_curr']  # A + D (+x)
+        I_x_neg = block['ib_curr'] + block['ic_curr']  # B + C (-x)
+
+        I_y_pos = block['ia_curr'] + block['ib_curr']  # A + B (+y)
+        I_y_neg = block['ic_curr'] + block['id_curr']  # C + D (-y)
+
+        # Reject reverse-biased / dead channels
+        plates_positive = (
+            (block['ia_curr'] > -0.2) & (block['ib_curr'] > -0.2) &
+            (block['ic_curr'] > -0.2) & (block['id_curr'] > -0.2)
+        )
+
+        itot_floor     = 5.0
+        rel_itot_floor = 0.5  # Relative itot floor
+        pair_floor     = 5.0  # Current floor in pA for each half-plane pair
+
+        current_ok = (block['itot'] >= itot_floor) & (rel_itot >= rel_itot_floor) & plates_positive
+        # current_ok = (block['ia_curr'] >= itot_floor) & (block['ib_curr'] >= itot_floor) & (block['ic_curr'] >= itot_floor) & (block['id_curr'] >= itot_floor) & plates_positive
+
+        # itot_floor = 3.0  # Total current floor in pA for the entire block
+        valid_mask_x = mask_core & current_ok & plates_positive & (I_x_pos >= pair_floor) & (I_x_neg >= pair_floor)
+        valid_mask_y = mask_core & current_ok & plates_positive & (I_y_pos >= pair_floor) & (I_y_neg >= pair_floor)
+
+        valid_mask_joint = valid_mask_x & valid_mask_y
+
+        n_joint = np.sum(valid_mask_joint)
+        n_x_only = np.sum(valid_mask_x)
+        n_y_only = np.sum(valid_mask_y)
+
+        n_samples = block['time'].size
 
         data_vars = nan_template.copy()
         data_vars.update({
-            "Nx": block_nvec_avg[0],
-            "Ny": block_nvec_avg[1],
-            "Nz": block_nvec_avg[2],
-            "Bx": block_bvec_to_save[0],
-            "By": block_bvec_to_save[1],
-            "Bz": block_bvec_to_save[2],
-            "B_var_x": block_bvec_var[0],
-            "B_var_y": block_bvec_var[1],
-            "B_var_z": block_bvec_var[2],
-            "B_var_tot": b_var_tot,
-            "B_x_flow_angle": xangle,
-            "B_y_flow_angle": yangle,
-            "peak_azimuth": block.peak_az.mean().item(),
-            "peak_elevation": block.peak_el.mean().item(),
+            "Nx": block_nvec_avg[0], "Ny": block_nvec_avg[1], "Nz": block_nvec_avg[2],
+            "Bx": block_bvec_to_save[0], "By": block_bvec_to_save[1], "Bz": block_bvec_to_save[2],
+            "B_var_x": block_bvec_var[0], "B_var_y": block_bvec_var[1], "B_var_z": block_bvec_var[2],
+            "B_var_tot": b_var_tot, "B_x_flow_angle": xangle, "B_y_flow_angle": yangle,
+            "peak_azimuth": np.nanmean(block['peak_az']).item(),
+            "peak_elevation": np.nanmean(block['peak_el']).item(),
             "n_samples": n_samples,
         })
 
-        ia_fit = block.ia_curr.values[valid_idx]
-        ib_fit = block.ib_curr.values[valid_idx]
-        ic_fit = block.ic_curr.values[valid_idx]
-        id_fit = block.id_curr.values[valid_idx]
+        min_fit_points = 3
 
-        i_tot = np.maximum(ia_fit + ib_fit + ic_fit + id_fit, 1e-6)  
-
-        if method == "Bayesian_MCMC_5D_NCP":
-            if x_only:
-                update_dict, samples, var_x_array, var_y_array = _run_bayesian_pipeline_3d_ncp(
-                    block, valid_idx, vzbx_fit, vx_fit, vz_var, 
-                    block_nvec_avg, uncertainty_map, xangle, static_length, tag='x',
-                    likelihood_type=likelihood_type
-                )
-            elif y_only:
-                update_dict, samples, var_x_array, var_y_array = _run_bayesian_pipeline_3d_ncp(
-                    block, valid_idx, vzby_fit, vy_fit, vz_var, 
-                    block_nvec_avg, uncertainty_map, yangle, static_length, tag='y',
-                    likelihood_type=likelihood_type
-                )
+        if n_joint >= min_fit_points and geom_ok_x and geom_ok_y and method in ("Bayesian_MCMC_5D_NCP", "Bayesian_MCMC_NCP"):
+            # --- 5D JOINT CONSENSUS FIT ---
+            valid_idx = valid_mask_joint
+            if weighted_fit:
+                block['weight_fits'] = block['weights_rdf'][valid_idx]
             else:
-                update_dict, samples, var_x_array, var_y_array = _run_bayesian_pipeline_5d_ncp(
-                    block, valid_idx, vzbx_fit, vx_fit, vzby_fit, vy_fit, vz_var, 
-                    block_nvec_avg, uncertainty_map, xangle, yangle, static_length, 
-                    likelihood_type=likelihood_type
-                )
+                block['weight_fits'] = np.ones(n_joint)
 
+            vx_fit = (block['vx'] - block['uvec'][:, 0][:, None])[valid_idx]
+            vy_fit = (block['vy'] - block['uvec'][:, 1][:, None])[valid_idx]
+            vz_var = block['vz_var'][valid_idx]
+
+            if use_avg_bfield:
+                vzbx_fit = (vz_shifted * block_nvec_avg[0])[valid_idx]
+                vzby_fit = (vz_shifted * block_nvec_avg[1])[valid_idx]
+            else:
+                vzbx_fit = (vz_shifted * block['nvec'][:, 0][:, None])[valid_idx]
+                vzby_fit = (vz_shifted * block['nvec'][:, 1][:, None])[valid_idx]
+
+            update_dict, samples, var_x_array, var_y_array = _run_bayesian_pipeline_5d_ncp(
+                block, valid_idx, vzbx_fit, vx_fit, vzby_fit, vy_fit, vz_var,
+                block_nvec_avg, uncertainty_map, xangle, yangle, static_length,
+                likelihood_type=likelihood_type
+            )
             data_vars.update(update_dict)
 
+        elif n_x_only >= min_fit_points and geom_ok_x and method in ("Bayesian_MCMC_5D_NCP", "Bayesian_MCMC_NCP"):
+            # --- 3D X-ONLY FALLBACK ---
+            valid_idx = valid_mask_x
+            if weighted_fit:
+                block['weight_fits'] = block['weights_rdf'][valid_idx]
+            else:
+                block['weight_fits'] = np.ones(n_x_only)
 
-            # if block_time == np.datetime64('2023-12-27T03:47:30.000000000'):
-            if block_time == np.datetime64('2023-09-26T03:16:58.000000000'):
-                bz = block_nvec_avg[2]
-                a_x = update_dict['T_ani_chi']
-                a_y = update_dict['T_ani_psi']
-                aavg = update_dict['T_ani_avg']
-                M_x = calc_slope_from_anisotropy(a_x, bz)
-                M_y = calc_slope_from_anisotropy(a_y, bz)
-                M   = calc_slope_from_anisotropy(aavg, bz)
-                
-                gam_x = update_dict['gamma_chi']
-                gam_y = update_dict['gamma_psi']
+            vx_fit = (block['vx'] - block['uvec'][:, 0][:, None])[valid_idx]
+            vy_fit = np.array([])  # Empty so plotting function knows Y is unmeasured
+            vz_var = block['vz_var'][valid_idx]
 
-                W_x = 1.0 / var_x_array
-                cx_x = np.sum(W_x * vzbx_fit) / np.sum(W_x)
-                cy_x = np.sum(W_x * vx_fit) / np.sum(W_x)
-                gam_true_x = cy_x - (M * cx_x)  # Anchor M through the X-data centroid
+            if use_avg_bfield:
+                vzbx_fit = (vz_shifted * block_nvec_avg[0])[valid_idx]
+                vzby_fit = np.array([])
+            else:
+                vzbx_fit = (vz_shifted * block['nvec'][:, 0][:, None])[valid_idx]
+                vzby_fit = np.array([])
 
-                W_y = 1.0 / var_y_array
-                cx_y = np.sum(W_y * vzby_fit) / np.sum(W_y)
-                cy_y = np.sum(W_y * vy_fit) / np.sum(W_y)
-                gam_true_y = cy_y - (M * cx_y)
+            update_dict, samples, var_x_array, var_y_array = _run_bayesian_pipeline_3d_ncp(
+                block, valid_idx, vzbx_fit, vx_fit, vz_var,
+                block_nvec_avg, uncertainty_map, xangle, static_length, tag='x',
+                likelihood_type=likelihood_type
+            )
+            data_vars.update(update_dict)
 
+        elif n_y_only >= min_fit_points and geom_ok_y and method in ("Bayesian_MCMC_5D_NCP", "Bayesian_MCMC_NCP"):
+            # --- 3D Y-ONLY FALLBACK ---
+            valid_idx = valid_mask_y
+            if weighted_fit:
+                block['weight_fits'] = block['weights_rdf'][valid_idx]
+            else:
+                block['weight_fits'] = np.ones(n_y_only)
 
+            vx_fit = np.array([])  # Empty so plotting function knows X is unmeasured
+            vy_fit = (block['vy'] - block['uvec'][:, 1][:, None])[valid_idx]
+            vz_var = block['vz_var'][valid_idx]
 
-                fig, ax = plt.subplots(2, figsize=(12,8))
+            if use_avg_bfield:
+                vzbx_fit = np.array([])
+                vzby_fit = (vz_shifted * block_nvec_avg[1])[valid_idx]
+            else:
+                vzbx_fit = np.array([])
+                vzby_fit = (vz_shifted * block['nvec'][:, 1][:, None])[valid_idx]
 
-                ax[0].errorbar(vzbx_fit, vx_fit, yerr=np.sqrt(var_x_array), linestyle='None', fmt='o', color='k', ecolor='tab:blue', capsize=5)
-                im0 = ax[0].scatter(vzbx_fit, vx_fit, c=i_tot, zorder=10)
-
-                xx = np.linspace(np.min(vzbx_fit), np.max(vzbx_fit))
-                ax[0].plot(xx, M_x*xx + gam_x)
-                ax[0].plot(xx, M*xx + gam_true_x)
-
-                ax[1].errorbar(vzby_fit, vy_fit, yerr=np.sqrt(var_y_array), linestyle='None', fmt='o', color='k', ecolor='tab:blue', capsize=5)
-                im1 = ax[1].scatter(vzby_fit, vy_fit, c=i_tot, zorder=10)
-                yy = np.linspace(np.min(vzby_fit), np.max(vzby_fit))
-                ax[1].plot(yy, M_y*yy + gam_y)
-                ax[1].plot(yy, M*yy + gam_true_y)
-
-                ax[0].set_title(f'{t0} to {t1} | {a_x}, {a_y}, {aavg}')
-
-                fig.colorbar(im0)
-                fig.colorbar(im1)
-
-
-            if plot_diagnostics:
-                try:
-                    date_folder = str(block_time)[:10] 
-                    plot_dir = f'posterior_plots/5D/{date_folder}'
-                    os.makedirs(plot_dir, exist_ok=True)
-                    safe_time = str(block_time).replace(':', '').replace('-', '').replace('T', '_')
-                    
-                    # Transform only the Alpha columns to log10
-                    plot_samples = np.copy(samples)
-                    plot_samples[:, 0:3] = np.log10(plot_samples[:, 0:3])
-                    
-                    # Update labels for 5D
-                    labels = [r"$\log_{10}(\alpha_{true})$", r"$\log_{10}(\alpha_{eff,x})$", 
-                              r"$\log_{10}(\alpha_{eff,y})$", r"$\gamma_{int,x}$", r"$\gamma_{int,y}$"]
-                              
-                    fig = corner.corner(plot_samples, labels=labels, 
-                                        quantiles=[0.16, 0.5, 0.84], show_titles=True)
-                    plt.suptitle(f"5D MCMC Posterior: {block_time}", y=1.05, fontsize=14)
-                    plt.savefig(f'{plot_dir}/5D_corner_{safe_time}.png', dpi=150, bbox_inches='tight')
-                    plt.close()
-                except Exception as e:
-                    print(f"Diagnostics plotting failed for {block_time}: {e}")
+            update_dict, samples, var_x_array, var_y_array = _run_bayesian_pipeline_3d_ncp(
+                block, valid_idx, vzby_fit, vy_fit, vz_var,
+                block_nvec_avg, uncertainty_map, yangle, static_length, tag='y',
+                likelihood_type=likelihood_type
+            )
+            data_vars.update(update_dict)
 
         else:
-            print(f"Method '{method}' is not implemented.")
-            pass
+            # Neither plane is statistically or geometrically viable
+            nan_rec = nan_template.copy()
+            nan_rec['time'] = block_time
+            all_results.append(nan_rec)
+            continue
 
-        
-        result_ds = package_to_xarray(data_vars, block_time, t0, t1)
-        all_results.append(result_ds)
+        if plot_diagnostics:
+            try:
+                date_folder = str(block_time)[:10]
+                plot_dir = f'test/5D_3/{date_folder}'
+                os.makedirs(plot_dir, exist_ok=True)
+                safe_time = str(block_time).replace(':', '').replace('-', '').replace('T', '_')
+                plot_spc_diagnostic_with_plates(block, valid_idx, block_time, 
+                                        vzbx_fit, vx_fit, var_x_array,
+                                        vzby_fit, vy_fit, var_y_array,
+                                        block_nvec_avg, update_dict,
+                                        save_path=f'{plot_dir}/spc_diagnostics_{safe_time}.png')
 
+                # date_folder = str(block_time)[:10] 
+                # plot_dir = f'posterior_plots/5D/{date_folder}'
+                # os.makedirs(plot_dir, exist_ok=True)
+                # safe_time = str(block_time).replace(':', '').replace('-', '').replace('T', '_')
+                
+                # # Transform only the Alpha columns to log10
+                # plot_samples = np.copy(samples)
+                # plot_samples[:, 0:3] = np.log10(plot_samples[:, 0:3])
+                
+                # # Update labels for 5D
+                # labels = [r"$\log_{10}(\alpha_{true})$", r"$\log_{10}(\alpha_{eff,x})$", 
+                #           r"$\log_{10}(\alpha_{eff,y})$", r"$\gamma_{int,x}$", r"$\gamma_{int,y}$"]
+                            
+                # fig = corner.corner(plot_samples, labels=labels, 
+                #                     quantiles=[0.16, 0.5, 0.84], show_titles=True)
+                # plt.suptitle(f"5D MCMC Posterior: {block_time}", y=1.05, fontsize=14)
+                # plt.savefig(f'{plot_dir}/5D_corner_{safe_time}.png', dpi=150, bbox_inches='tight')
+                # plt.close()
+            except Exception as e:
+                print(f"Diagnostics plotting failed for {block_time}: {e}")
+
+        data_vars['time'] = block_time
+        all_results.append(data_vars)
+
+    # 4. Instantaneous single-pass DataFrame to xarray conversion
     if len(all_results) > 0:
-        final_ds = xr.concat(all_results, dim="time")
+        df = pd.DataFrame(all_results).set_index("time")
+        final_ds = df.to_xarray()
     else:
         print("Warning: No valid data blocks found. Returning empty Dataset.")
-        final_ds = xr.Dataset() 
-        
-    return final_ds    
+        final_ds = xr.Dataset()
+
+    return final_ds 
             

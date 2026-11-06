@@ -313,7 +313,8 @@ if __name__ == "__main__":
             # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D/SPC_Anisotropy_{date}_peak_track_averaged_4s.cdf')
             # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_averaged_4s.cdf')
             # xr_ani = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_fit4s_gflag.cdf')#peak_track_averaged_4s.cdf')
-            xr_ani = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_Cauchy_fit4s_gflag.cdf')
+            # xr_ani = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP_DEP/SPC_Anisotropy_{date}_peak_track_T_fit4s_mf37_gflag.cdf')
+            xr_ani = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_T_fit4s_mf38_gflag_v2.cdf')
             xr_ani = xr_ani.where(xr_ani != -1e31, np.nan)
 
             xr_ani_list.append(xr_ani)
@@ -339,25 +340,9 @@ if __name__ == "__main__":
     anisotropy  = xr_ani_merge['T_ani_avg'].data
 
     # Get the parallel plasma beta
-    beta_para, T_ani = calculate_parallel_beta_and_anisotropy(xr_ani_merge, DTYPE='corefit')
+    # beta_para, T_ani = calculate_parallel_beta_and_anisotropy(xr_ani_merge, DTYPE='corefit')
+    beta_para, T_ani = calculate_parallel_beta_and_anisotropy(xr_ani_merge, DTYPE='fit')
     T_ani = T_ani
-
-    ani_chi = xr_ani_merge['T_ani_chi'].data#[mask_ani_x]
-    time_chi = xr_ani_merge['time'].data#[mask_ani_x]
-    ani_psi = xr_ani_merge['T_ani_psi'].data#[mask_ani_y]
-    time_psi = xr_ani_merge['time'].data#[mask_ani_y]
-
-    # Get the chi squared data product. 
-    chi_sq_joint = xr_ani_merge['chi_sq_joint'].data
-    chi_sq_chi   = xr_ani_merge['chi_sq_chi'].data
-    chi_sq_psi   = xr_ani_merge['chi_sq_psi'].data
-
-    # Get the effective chi_sq valeus
-    chi_sq_xeff = xr_ani_merge['chi_sq_eff_x'].data
-    chi_sq_yeff = xr_ani_merge['chi_sq_eff_y'].data
-
-    dof_ratio = chi_sq_joint / (chi_sq_chi + chi_sq_psi)
-    chi_sq_joint_eff = dof_ratio * (chi_sq_xeff + chi_sq_yeff)
 
     max_flag = (xr_ani_merge.total_max_flag.data > 0)
     # New uncertainty map
@@ -367,24 +352,15 @@ if __name__ == "__main__":
     delta_plus = xr_ani_merge.T_ani_avg_delta_plus.data
 
     # Reconstruct the 16th and 84th percentiles
-    p84 = mu + delta_plus
-    p16 = mu - delta_minus
+    # p84 = mu + delta_plus
+    # p16 = mu - delta_minus
+    p20_upper = delta_plus/mu
+    p20_lower = delta_minus/mu
 
-    # Safety check: Anisotropy strictly > 0, so P16 should be > 0.
-    # If P16 <= 0, the MCMC hit the zero-boundary hard (a highly uncertain fit).
-    valid_bounds = (p16 > 0) & (p84 > 0)
+    valid_bounds = (p20_lower < 0.20) & (p20_upper < 0.20)
 
-    # Calculate the logarithmic width of the 68% credible interval
-    # We initialize with NaNs to handle the invalid bounds safely
-    log_width = np.full_like(mu, np.nan)
-    log_width[valid_bounds] = np.log10(p84[valid_bounds] / p16[valid_bounds])
-
-    # Define your filter threshold
-    # A log_width of ~0.086 means the upper bound is 22% larger than the lower bound.
-    # A log_width of ~0.176 means the upper bound is 50% larger than the lower bound.
-    max_allowable_log_width = 0.176  # Adjust this threshold based on your needs
-
-    strict_uncert_flag = (log_width < max_allowable_log_width) & np.isfinite(log_width)
+    strict_uncert_flag = valid_bounds & np.isfinite(p20_upper) & np.isfinite(p20_lower)
+    # strict_uncert_flag = np.isfinite(p20_upper) & np.isfinite(p20_lower)
 
     # The hardware geometric limits we defined earlier
     xangle = xr_ani_merge['B_x_flow_angle'].data
@@ -399,14 +375,12 @@ if __name__ == "__main__":
     beam_vals = xr_ani_merge.n3_fit.data
     core_vals = xr_ani_merge.np1_fit.data
 
-    hf_flag = np.isnan(beam_vals) & (np.isnan(xr_ani_merge.na_fit.data))#| (beam_vals/core_vals < 0.001)
+    # hf_flag = np.isnan(beam_vals) & (np.isnan(xr_ani_merge.na_fit.data))#| (beam_vals/core_vals < 0.001)
 
     # Bfield flag
-    x_flow_angles = (xr_ani_merge.B_x_flow_angle.data > 10) & (xr_ani_merge.B_x_flow_angle.data < 80)
-    y_flow_angles = (xr_ani_merge.B_y_flow_angle.data > 10) & (xr_ani_merge.B_y_flow_angle.data < 80)
+    x_flow_angles = (xr_ani_merge.B_x_flow_angle.data > 5) & (xr_ani_merge.B_x_flow_angle.data < 85)
+    y_flow_angles = (xr_ani_merge.B_y_flow_angle.data > 5) & (xr_ani_merge.B_y_flow_angle.data < 85)
     flow_angle_flag = x_flow_angles | y_flow_angles
-
-    chi_sq_flag = (xr_ani_merge.chi_sq_joint.data >= 0.5) & (xr_ani_merge.chi_sq_joint.data <= 1.5)
 
     max_flag = (xr_ani_merge['total_max_flag'].values > 0) & (strict_uncert_flag) & (valid_geometry) & (valid_anis)  
 
