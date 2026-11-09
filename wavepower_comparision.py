@@ -288,7 +288,11 @@ def calc_cyclotron_threshold(beta):
 if __name__ == "__main__":
     # date_list = ['2023-09-21', '2023-09-22', '2023-09-23', '2023-09-24', '2023-09-25', '2023-09-26']
 
-    file_path = 'selected_dates_updated.pkl'
+    file_path = 'selected_dates_updated_v2.pkl'
+    file_path2 = 'updated_flags_intervals_v2.pkl'
+
+    with open(file_path2, 'rb') as f:
+        updated_flags2 = pickle.load(f)
 
     # Load the list (open file in 'rb' binary read mode)
     with open(file_path, 'rb') as f:
@@ -296,7 +300,7 @@ if __name__ == "__main__":
 
     loaded_list = [date for date_list in loaded_dict.values() for date in date_list]
 
-    cutoff = datetime(2023,1,1) 
+    cutoff = datetime(2022,1,1) 
 
     laoded_list = [
         d for d in loaded_list
@@ -308,14 +312,15 @@ if __name__ == "__main__":
     xr_l3_list = []
     for date in loaded_list:
         try:
+            updated_flag = updated_flags2[date].rename({'time':'Epoch'})
+
             year, month, day = date.split('-')
             xr_wave = cdflib.xarray.cdf_to_xarray(f'./v1.3/{year}/{month}/PSP_wavePower_{date}_v1.3.cdf')
-            # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D/SPC_Anisotropy_{date}_peak_track_averaged_4s.cdf')
-            # xr_ani  = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_averaged_4s.cdf')
-            # xr_ani = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_fit4s_gflag.cdf')#peak_track_averaged_4s.cdf')
-            # xr_ani = cdflib.xarray.cdf_to_xarray(f'/home/michael/Research/PSP_Temp_Anisotropy/anisotropy_files/Bayesian_MCMC_5D_NCP_DEP/SPC_Anisotropy_{date}_peak_track_T_fit4s_mf37_gflag.cdf')
+            # xr_wave = cdflib.xarray.cdf_to_xarray(f'./v3.4/{year}/{month}/PSP_WaveResonance_1D_{date}_v3.4.cdf')
             xr_ani = cdflib.xarray.cdf_to_xarray(f'./anisotropy_files/Bayesian_MCMC_5D_NCP/SPC_Anisotropy_{date}_peak_track_T_fit4s_mf38_gflag_v2.cdf')
             xr_ani = xr_ani.where(xr_ani != -1e31, np.nan)
+
+            xr_ani['new_max_flag'] = updated_flag.total_max_flag
 
             xr_ani_list.append(xr_ani)
             
@@ -344,46 +349,26 @@ if __name__ == "__main__":
     beta_para, T_ani = calculate_parallel_beta_and_anisotropy(xr_ani_merge, DTYPE='fit')
     T_ani = T_ani
 
-    max_flag = (xr_ani_merge.total_max_flag.data > 0)
-    # New uncertainty map
-    # Extract the base parameters
-    mu = xr_ani_merge.T_ani_avg.data
+    bx_angle = xr_ani_merge['B_x_flow_angle'].data
+    by_angle = xr_ani_merge['B_y_flow_angle'].data
+
+    valid_x = (np.abs(bx_angle) > 5) & (np.abs(bx_angle) < 85)
+    valid_y = (np.abs(by_angle) > 5) & (np.abs(by_angle) < 85)
+
+    angle_flag = valid_x | valid_y
+
+    mu = anisotropy
     delta_minus = xr_ani_merge.T_ani_avg_delta_minus.data
     delta_plus = xr_ani_merge.T_ani_avg_delta_plus.data
 
-    # Reconstruct the 16th and 84th percentiles
-    # p84 = mu + delta_plus
-    # p16 = mu - delta_minus
     p20_upper = delta_plus/mu
     p20_lower = delta_minus/mu
 
-    valid_bounds = (p20_lower < 0.20) & (p20_upper < 0.20)
-
-    strict_uncert_flag = valid_bounds & np.isfinite(p20_upper) & np.isfinite(p20_lower)
-    # strict_uncert_flag = np.isfinite(p20_upper) & np.isfinite(p20_lower)
-
-    # The hardware geometric limits we defined earlier
-    xangle = xr_ani_merge['B_x_flow_angle'].data
-    yangle = xr_ani_merge['B_y_flow_angle'].data
-
-    valid_geometry = (np.abs(xangle) > 5) & (np.abs(xangle) < 85) & \
-                     (np.abs(yangle) > 5) & (np.abs(yangle) < 85)
-
-    valid_anis = (anisotropy > 0.15) & (anisotropy < 9.0) 
-
-    # heat flux flag
-    beam_vals = xr_ani_merge.n3_fit.data
-    core_vals = xr_ani_merge.np1_fit.data
-
-    # hf_flag = np.isnan(beam_vals) & (np.isnan(xr_ani_merge.na_fit.data))#| (beam_vals/core_vals < 0.001)
-
-    # Bfield flag
-    x_flow_angles = (xr_ani_merge.B_x_flow_angle.data > 5) & (xr_ani_merge.B_x_flow_angle.data < 85)
-    y_flow_angles = (xr_ani_merge.B_y_flow_angle.data > 5) & (xr_ani_merge.B_y_flow_angle.data < 85)
-    flow_angle_flag = x_flow_angles | y_flow_angles
-
-    max_flag = (xr_ani_merge['total_max_flag'].values > 0) & (strict_uncert_flag) & (valid_geometry) & (valid_anis)  
-
+    max_allowable_uncert = 0.2 
+    strict_uncert_flag = (p20_upper < max_allowable_uncert) & (p20_lower < max_allowable_uncert) & np.isfinite(p20_upper) & np.isfinite(p20_lower)
+    valid_anis = (anisotropy > 0.2) & (anisotropy < 9.0) & angle_flag
+    max_flag = (xr_ani_merge['new_max_flag'].values > 0) & strict_uncert_flag
+    
     # Lets try the scatter plot colored by wave power.
     x_data = np.log10(beta_para[max_flag])
     y_data = np.log10(T_ani[max_flag])
@@ -515,7 +500,7 @@ if __name__ == "__main__":
     # ax.grid(True, which='both', linestyle='-', alpha=0.2)
     ax.legend(loc='upper right', fontsize=12)
 
-    # plt.savefig('./figures/wavepower_brazil_plot.png')
+    plt.savefig('./figures/wavepower_brazil_plot.png', dpi=250)
 
 
 
