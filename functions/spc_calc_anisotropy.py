@@ -1323,11 +1323,9 @@ def calculate_spc_anisotropy(ds, uncertainty_map, method='Bayesian_MCMC_NCP', li
         )
 
         itot_floor     = 5.0
-        rel_itot_floor = 0.5  # Relative itot floor
         pair_floor     = 5.0  # Current floor in pA for each half-plane pair
 
-        current_ok = (block['itot'] >= itot_floor) & (rel_itot >= rel_itot_floor) & plates_positive
-        # current_ok = (block['ia_curr'] >= itot_floor) & (block['ib_curr'] >= itot_floor) & (block['ic_curr'] >= itot_floor) & (block['id_curr'] >= itot_floor) & plates_positive
+        current_ok = (block['itot'] >= itot_floor) & plates_positive
 
         # itot_floor = 3.0  # Total current floor in pA for the entire block
         valid_mask_x = mask_core & current_ok & plates_positive & (I_x_pos >= pair_floor) & (I_x_neg >= pair_floor)
