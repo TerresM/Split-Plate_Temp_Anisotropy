@@ -40,13 +40,13 @@ Inside `run_temperature_anisotropy.py`, you can modify the `config` dictionary t
 
 If you use this codebase, the Bayesian MCMC framework, or the derived temperature anisotropy datasets in your research, please cite our submitted manuscript:
 
-> Terres, M., Paulson, K. W., Stevens, M. L., Bharati Das, S., Niembro, T., Verniero, J. L., Badman, S. T., Rivera, Y. J., Huang, J., Klein, K. G., Fraschetti, F., Larson, D., Livi, R., Whittlesey, P., Bale, S. D., Szabo, A., Case, A. W., & Raouafi, N. E. (2026). *Extracting Proton Core Anisotropy from Split-Plate Faraday Cups: A Linear Regression Method Validated by Parker Solar Probe*. Submitted to *The Astrophysical Journal*.
+> Terres, M., Paulson, K. W., Stevens, M. L., Bharati Das, S., Niembro, T., Verniero, J. L., Badman, S. T., Rivera, Y. J., Huang, J., Klein, K. G., Fraschetti, F., Larson, D., Livi, R., Whittlesey, P., Bale, S. D., Szabo, A., Case, A. W., & Raouafi, N. E. (2026). *Extracting Proton Core Anisotropy from Split-Plate Faraday Cups: A Linear Regression Method Validated by Parker Solar Probe*. Submitted to *The Astrophysical Journal Supplement Series*.
 
 ```bibtex
 @unpublished{terres2026anisotropy,
   title  = {Extracting Proton Core Anisotropy from Split-Plate Faraday Cups: A Linear Regression Method Validated by Parker Solar Probe},
   author = {Terres, Michael and Paulson, Kristoff W. and Stevens, Michael L. and {Bharati Das}, Srijan and Niembro, Tatiana and Verniero, Jaye L. and Badman, Samuel T. and Rivera, Yeimy J. and Huang, Jia and Klein, Kristopher G. and Fraschetti, Federico and Larson, Davin and Livi, Roberto and Whittlesey, Phyllis and Bale, Stuart D. and Szabo, Adam and Case, Anthony W. and Raouafi, Nour E.},
-  note   = {Submitted to The Astrophysical Journal; preprint available upon request},
+  note   = {Submitted to The Astrophysical Journal Supplement Series; preprint available upon request},
   year   = {2026}
 }
 ```
