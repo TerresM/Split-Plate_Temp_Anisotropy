@@ -1,4 +1,4 @@
-# PSP Temp Anisotropy
+# Split-Plate Temperature Anisotropy
 
 This repository contains the official codebase for extracting the instantaneous proton core temperature anisotropy from split-plate Faraday Cup spectra. The method uses a gyrotropic linear-fitting approach and a hierarchical Bayesian Markov Chain Monte Carlo (MCMC) framework to derive the 3D temperature anisotropy from 1D reduced velocity distribution functions (RDFs).
 
